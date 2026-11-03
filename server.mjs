@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { randomUUID } from 'node:crypto';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, open, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -11,8 +10,22 @@ import { queryDatabase } from './database.mjs';
 import { parseCsv } from './datasets.mjs';
 import { executionCsv, queryExecutionOverview } from './execution-overview.mjs';
 import { queryRunHistory } from './history-query.mjs';
-import { inspectPage, validateGeneratedTest } from './inspection.mjs';
+import { agentOptions, checkpoint } from './agent-workflow.mjs';
+import { inspectionUrl, inspectPage, validateGeneratedTest } from './inspection.mjs';
+import {
+  draftTest,
+  McpConnections,
+  normalizeIntegrationSettings,
+  providerKey,
+  publicSettings,
+  reasonxBaseUrl,
+} from './integrations.mjs';
 import { fileLimit, normalizeLocalData, readDataTable, resolveLocalValue } from './local-data.mjs';
+import { mcpCatalog } from './mcp-catalog.mjs';
+import { reasonxModelList, reasonxModels } from './reasonx-client.mjs';
+import { createReasonxRuntime } from './reasonx-runtime.mjs';
+import { automationWorkflow } from './reasonx-workflows.mjs';
+import { aiEngines, engineSettings, normalizeUserAi, publicUserAi, verifyEngine } from './user-ai.mjs';
 import { reportHtml } from './reports.mjs';
 import { executeRun, locator, preflight, startDebugSession } from './runner.mjs';
 import {
@@ -58,6 +71,10 @@ const BACKUP_NAME = /^backup-[\w-]+\.json$/;
 const SUPPORTED_BROWSERS = ['chrome', 'firefox', 'edge'];
 const ASSET_KEYS = ['screenshot', 'captureScreenshot', 'trace', 'fileId'];
 const REPOSITORY_FIELDS = ['objects', 'locatorTemplates', 'tests', 'prerequisites', 'repositoryLegacyObjects'];
+const MAX_AI_PROMPT = 12000;
+const MAX_AI_MCP_SERVERS = 10;
+const GENERATION_ATTEMPTS = 2;
+const CORRECTABLE_GENERATION_ERRORS = ['GENERATED_LOCATOR_NOT_OBSERVED', 'GENERATED_URL_INVALID'];
 const MAX_SCHEDULES = 100;
 const MAX_INTERVAL_MINUTES = 525600;
 const SCHEDULE_TICK_MS = 1000;
@@ -262,6 +279,10 @@ async function createUnlockedStudio({
   port = Number(process.env.PORT || DEFAULT_PORT),
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
   recordingLauncher = startRecording,
+  aiFetcher = fetch,
+  reasonxRuntime = createReasonxRuntime({
+    home: process.env.REASONX_HOME || path.resolve(appRoot, '../../../For Ai/aiResoningAgent'),
+  }),
 } = {}) {
   const dataDir = path.join(storage, 'data');
   const artifactsDir = path.join(storage, 'artifacts');
@@ -335,6 +356,46 @@ async function createUnlockedStudio({
   store.workLog ||= [];
   store.workLogStartedAt ||= new Date().toISOString();
   store.schedules ||= [];
+  store.agentDrafts ||= [];
+  store.userAi ||= {};
+
+  const loadedSettings = store.settings || {};
+  store.settings = normalizeIntegrationSettings(loadedSettings, loadedSettings);
+  // A previous in-session migration briefly tagged a saved OpenAI model and key as
+  // Google. The model ID tells them apart, so move the key into its own slot.
+  if (store.settings.provider === 'google' && /^gpt[-_]/i.test(store.settings.model)) {
+    store.settings.apiKeys ||= {};
+    store.settings.apiKeys.openai ||= store.settings.apiKeys.google || store.settings.apiKey || '';
+    delete store.settings.apiKeys.google;
+    store.settings.apiKey = '';
+    store.settings.model = 'gemini-3.8-flash';
+  }
+
+  // Keep the latest generation per project so a refreshed tab can recover its progress
+  // or saved result. A server restart cannot resume an inference call.
+  store.aiGenerations = (store.aiGenerations || [])
+    .filter((job) => store.projects.some((project) => project.id === job.projectId))
+    .map((job) =>
+      job.status === 'running'
+        ? {
+            ...job,
+            status: 'interrupted',
+            finishedAt: new Date().toISOString(),
+            error: 'Studio restarted before generation finished. Generate again to retry.',
+          }
+        : job,
+    );
+
+  const connections = new McpConnections();
+  const authoringServer = {
+    name: 'Studio authoring',
+    transport: 'stdio',
+    command: process.execPath,
+    args: [path.join(appRoot, 'mcp-server.mjs'), `http://127.0.0.1:${port}`],
+    env: {},
+  };
+  const authoring = new Set();
+  const generationControllers = new Map();
 
   let activeRun = null;
   let execution = null;
@@ -761,6 +822,12 @@ async function createUnlockedStudio({
       const projects = store.projects.filter((project) => hasProject(user, project.id));
       await json(res, {
         features: { nestedFolders: true, visibleReplay: true, caseHistory: true, generationRecovery: true },
+        aiGenerations: generationState(user),
+        agentDrafts: can(user, 'automation')
+          ? store.agentDrafts
+              .filter((draft) => hasProject(user, draft.projectId))
+              .map(({ inspection, ...draft }) => draft)
+          : [],
         projects: isAutomation ? projects.map(automationProject) : projects.map((project) => projectForViewer(project)),
         runs: stateRuns().map((run) => runForViewer(run)),
         ...activityState(),
@@ -769,6 +836,7 @@ async function createUnlockedStudio({
     }
     if (req.method === 'GET' && route === '/api/status') {
       await json(res, {
+        activeGenerations: generationState(user).filter((job) => job.status === 'running'),
         runs: store.runs.filter(isVisible).slice(0, STATE_RUN_LIMIT).map((run) => runForViewer(run)),
         ...activityState(),
       });
@@ -804,7 +872,7 @@ async function createUnlockedStudio({
     }
     if (route === '/api/backups/restore' && req.method === 'POST') {
       const input = await readBody(req);
-      const isBusy = activeRun || startingBrowser || recording || debugSessions.size;
+      const isBusy = activeRun || startingBrowser || recording || debugSessions.size || authoring.size;
       check(!isBusy, 'Finish active sessions before restoring');
       check(BACKUP_NAME.test(input.name), 'Invalid backup');
       const restored = vault.decode(JSON.parse(await readFile(path.join(dataDir, input.name), 'utf8')));
@@ -1262,6 +1330,494 @@ async function createUnlockedStudio({
     return true;
   }
 
+  // ---- Settings, MCP and AI ---------------------------------------------------
+
+  const settingsResponse = (viewer) => ({
+    ...publicSettings(store.settings),
+    userAi: publicUserAi(store.userAi[viewer?.id]),
+    ...(can(viewer, 'useMcp') ? {} : { mcpServers: [], aiMcpServerIds: [] }),
+    mcpCatalog: can(viewer, 'manageMcp') ? mcpCatalog() : [],
+    studioMcp: {
+      command: process.execPath,
+      args: [path.join(appRoot, 'mcp-server.mjs'), `http://127.0.0.1:${port}`],
+    },
+  });
+
+  const findMcp = (serverId) => {
+    const server = store.settings.mcpServers.find((candidate) => candidate.id === serverId);
+    if (!server) throw httpError('MCP server not found', 404);
+    return server;
+  };
+
+  async function saveSettings(input) {
+    const settings = normalizeIntegrationSettings(input, store.settings);
+    await connections.close();
+    store.settings = settings;
+    await persist();
+  }
+
+  async function settingsRoutes(req, res, route, url, user) {
+    if (route === '/api/settings' && req.method === 'GET') {
+      await json(res, settingsResponse(user));
+      return true;
+    }
+    if (route === '/api/settings' && req.method === 'PUT') {
+      await saveSettings(await readBody(req));
+      await json(res, settingsResponse(user));
+      return true;
+    }
+    if (route === '/api/account/ai' && req.method === 'GET') {
+      await json(res, publicUserAi(store.userAi[user.id]));
+      return true;
+    }
+    if (route === '/api/account/ai' && req.method === 'PUT') {
+      store.userAi[user.id] = normalizeUserAi(await readBody(req), store.userAi[user.id]);
+      await persist();
+      await json(res, publicUserAi(store.userAi[user.id]));
+      return true;
+    }
+    if (route === '/api/account/ai/test' && req.method === 'POST') {
+      const input = await readBody(req);
+      check(input.engine === 'claude' || input.engine === 'chatgpt', 'Choose Claude or ChatGPT to test');
+      const settings = engineSettings(store.settings, store.userAi[user.id], input.engine);
+      await json(res, await verifyEngine(settings, aiFetcher));
+      return true;
+    }
+    return false;
+  }
+
+  async function mcpRoutes(req, res, route, url, user) {
+    const presetRoute = route.match(/^\/api\/mcp\/presets\/(playwright|atlassian)$/);
+    if (presetRoute && req.method === 'POST') {
+      await readBody(req);
+      const preset = mcpCatalog().find((item) => item.id === presetRoute[1]);
+      let added = store.settings.mcpServers.find((server) => server.presetId === preset.id);
+      if (!added) {
+        added = { ...preset.config, id: randomUUID(), presetId: preset.id };
+        const mcpServers = [...store.settings.mcpServers, added];
+        store.settings = normalizeIntegrationSettings({ mcpServers }, store.settings);
+        await persist();
+      }
+      await json(res, { ...settingsResponse(user), addedServerId: added.id });
+      return true;
+    }
+    if (route === '/api/mcp/servers' && req.method === 'PUT') {
+      const input = await readBody(req);
+      const hasOnlyServers = Object.keys(input).every((key) => key === 'mcpServers');
+      check(Array.isArray(input.mcpServers) && hasOnlyServers, 'Send only MCP server connections');
+      await saveSettings({ mcpServers: input.mcpServers });
+      await json(res, settingsResponse(user));
+      return true;
+    }
+    const serverRoute = route.match(/^\/api\/mcp\/([\w-]+)\/(tools|call|reconnect)$/);
+    if (!serverRoute || req.method !== 'POST') return false;
+    const input = await readBody(req);
+    const server = findMcp(serverRoute[1]);
+    if (serverRoute[2] === 'reconnect') await json(res, await connections.reconnect(server));
+    else if (serverRoute[2] === 'tools') await json(res, await connections.list(server));
+    else await json(res, await connections.call(server, input.name, input.arguments));
+    return true;
+  }
+
+  function generationState(user) {
+    return store.aiGenerations.filter(
+      (job) => hasProject(user, job.projectId) && can(user, job.kind === 'requirements' ? 'qa' : 'automation'),
+    );
+  }
+
+  function startGeneration(details) {
+    const job = {
+      id: randomUUID(),
+      ...details,
+      status: 'running',
+      stage: 'inspection',
+      startedAt: new Date().toISOString(),
+    };
+    const others = store.aiGenerations.filter(
+      (item) => item.projectId !== job.projectId && store.projects.some((project) => project.id === item.projectId),
+    );
+    store.aiGenerations = [...others, job];
+    authoring.add(job.projectId);
+    generationControllers.set(job.id, new AbortController());
+    return job;
+  }
+
+  async function failGeneration(job, error) {
+    Object.assign(job, {
+      status: error.code === 'GENERATION_CANCELLED' ? 'cancelled' : 'failed',
+      finishedAt: new Date().toISOString(),
+      error: error.message || 'Generation failed. Try again.',
+    });
+    await persist();
+  }
+
+  async function authoringTool(name, args) {
+    requireProject(args.projectId);
+    const token = randomBytes(32).toString('base64url');
+    const client = new McpConnections();
+    serviceGrants.set(token, { userId: currentUser().id, projectId: args.projectId });
+    let result;
+    try {
+      result = await client.call({ ...authoringServer, env: { STUDIO_SESSION_TOKEN: token } }, name, args);
+    } finally {
+      serviceGrants.delete(token);
+      await client.close();
+    }
+    const text = result.content?.find((item) => item.type === 'text')?.text;
+    check(!result.isError, text || 'Studio MCP tool failed');
+    return JSON.parse(text);
+  }
+
+  const generationContext = (project) =>
+    JSON.stringify([
+      project.revision,
+      project.activeEnvironmentId,
+      project.environments,
+      project.globalVariables,
+      project.objects,
+      project.locatorTemplates,
+    ]);
+
+  function correctionFeedback(error, project, explicitUrl) {
+    if (error.code === 'GENERATED_URL_INVALID') {
+      return (
+        `${error.message} Begin with navigate to ${inspectionUrl(project, explicitUrl)}. Use a url step only with a ` +
+        'full HTTP or HTTPS address; check messages and headings with text, visible or heading steps. Preserve the ' +
+        'full workflow and exact variable names.'
+      );
+    }
+    return (
+      `${error.message} Correct ALL initial-page locators using the supplied observed controls. Copy locatorType, ` +
+      'target and framePath exactly (or use observed control IDs when available). A visible caption does not imply ' +
+      'a working label locator. Use the observed button text for the requested action. Preserve the full workflow ' +
+      'and exact variable names; later-page checks remain unverified.'
+    );
+  }
+
+  // Replaces a case's steps. Successful generation acknowledges the current requirements
+  // even if the script is identical, so the update flag clears either way.
+  async function saveGeneratedSteps(projectId, targetTest, steps) {
+    const previous = findProject(projectId);
+    const counter = { nextTestNumber: store.nextTestNumber };
+    const tests = previous.tests.map((item) => (item.id === targetTest.qaCaseId ? { ...item, steps } : item));
+    const next = normalizeProject({ ...previous, tests }, previous, counter);
+    next.tests.find((item) => item.id === targetTest.qaCaseId).automationNeedsUpdate = false;
+    store.projects[store.projects.indexOf(previous)] = next;
+    await persist();
+    return automationProject(next).tests.find((item) => item.id === targetTest.id);
+  }
+
+  async function generateAutomation(res, input, project, targetTest, engine, settings, servers) {
+    const options = { ...agentOptions(input.agentOptions, project.agentOptions), ...(engine === 'studio' ? {} : { enabled: false }) };
+    if (options.enabled) check(settings.provider === 'reasonx', 'Choose ReasonX in Model settings before enabling agents.');
+    const job = startGeneration({
+      projectId: project.id,
+      kind: 'automation',
+      testId: targetTest?.id || null,
+      model: settings.model,
+      ...(engine === 'studio' ? { reasonxMode: settings.reasonxMode } : { engine }),
+    });
+    const { signal } = generationControllers.get(job.id);
+    const { prompt } = input;
+    try {
+      await persist();
+      const explicitUrl = prompt.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[.,;:!?)\]}'"*`]+$/, '');
+      const inspection = await authoringTool('studio_inspect_page', {
+        projectId: project.id,
+        ...(explicitUrl ? { url: explicitUrl } : {}),
+      });
+      checkpoint(signal);
+
+      let draft;
+      let warnings;
+      let validationFeedback;
+      if (options.enabled) {
+        const agentSettings = {
+          ...settings,
+          model: options.model || settings.model,
+          reasonxMode: options.mode || settings.reasonxMode,
+        };
+        draft = await automationWorkflow({
+          settings,
+          options,
+          project,
+          targetTest,
+          prompt,
+          inspection,
+          fetcher: aiFetcher,
+          signal,
+          onStage: ({ stage, detail }) => {
+            job.stage = stage;
+            job.detail = detail;
+          },
+          generate: (feedback) =>
+            draftTest(agentSettings, project, prompt, aiFetcher, {
+              connections,
+              servers,
+              inspection,
+              targetTest,
+              validationFeedback: feedback,
+              signal,
+              agentOptions: options,
+            }),
+          validate: (value) => {
+            warnings = validateGeneratedTest(project, value, inspection);
+          },
+        });
+      } else {
+        for (let attempt = 0; attempt < GENERATION_ATTEMPTS; attempt += 1) {
+          job.stage = attempt ? 'correcting' : 'drafting';
+          draft = await draftTest(settings, project, prompt, aiFetcher, {
+            connections,
+            servers,
+            inspection,
+            targetTest,
+            validationFeedback,
+            signal,
+          });
+          job.stage = 'validation';
+          // Check again after each model call, including automatic corrections.
+          check(
+            generationContext(findProject(project.id)) === generationContext(project),
+            'Project variables or objects changed during generation. Generate again using the updated project.',
+          );
+          try {
+            warnings = validateGeneratedTest(project, draft, inspection);
+            break;
+          } catch (error) {
+            const isLastAttempt = attempt === GENERATION_ATTEMPTS - 1;
+            if (isLastAttempt || !CORRECTABLE_GENERATION_ERRORS.includes(error.code)) throw error;
+            // Feedback contains no draft values or credentials. Keep the same inspection
+            // and validate the correction before any case is saved.
+            validationFeedback = correctionFeedback(error, project, explicitUrl);
+          }
+        }
+      }
+
+      if (targetTest) {
+        for (const step of draft.steps) {
+          const isKnown = !step.qaRequirementId || targetTest.qa.manualSteps.some((item) => item.id === step.qaRequirementId);
+          check(isKnown, 'Generated step references an unknown QA requirement. Generate again.');
+        }
+      }
+      const environment = project.environments.find((item) => item.id === project.activeEnvironmentId);
+      const firstUrl = resolveValue(draft.steps[0], {
+        globals: project.globalVariables,
+        environment: environment?.variables || {},
+      });
+      check(
+        new URL(firstUrl).href === inspectionUrl(project, explicitUrl),
+        'The generated test navigates to a different URL than the inspected page. Specify the starting URL and generate again.',
+      );
+      checkpoint(signal);
+      check(
+        generationContext(findProject(project.id)) === generationContext(project),
+        'Project changed during generation. Generate again.',
+      );
+
+      if (options.enabled) {
+        const preview = {
+          id: job.id,
+          projectId: project.id,
+          testId: targetTest?.id || null,
+          qaCaseId: targetTest?.qaCaseId || null,
+          revision: project.revision,
+          draft,
+          warnings,
+          inspection,
+          createdAt: new Date().toISOString(),
+        };
+        store.agentDrafts = [...store.agentDrafts.filter((item) => item.projectId !== project.id), preview];
+        Object.assign(job, { status: 'review', stage: 'review', finishedAt: new Date().toISOString() });
+        await persist();
+        await json(res, { preview: { ...preview, inspection: undefined }, status: 'review' }, 201);
+        return;
+      }
+
+      job.stage = 'saving';
+      const test = targetTest
+        ? await saveGeneratedSteps(project.id, targetTest, draft.steps)
+        : await authoringTool('studio_create_test', { projectId: project.id, name: draft.name, steps: draft.steps });
+      Object.assign(job, {
+        status: 'completed',
+        finishedAt: new Date().toISOString(),
+        testId: test.id,
+        explanation: draft.explanation,
+        warnings,
+        projectRevision: findProject(project.id).revision,
+      });
+      await persist();
+      await json(
+        res,
+        {
+          test,
+          generationId: job.id,
+          projectRevision: job.projectRevision,
+          explanation: draft.explanation,
+          warnings,
+          inspection: { title: inspection.title, elementCount: inspection.elements.length, scope: inspection.scope },
+          status: 'not_run',
+        },
+        201,
+      );
+    } catch (error) {
+      if (job.status === 'running') await failGeneration(job, error);
+      throw error;
+    } finally {
+      authoring.delete(project.id);
+      generationControllers.delete(job.id);
+    }
+  }
+
+  async function applyAgentDraft(res, input) {
+    const preview = store.agentDrafts.find((draft) => draft.id === input.id);
+    check(preview, 'Draft no longer exists. Generate again.');
+    const previous = findProject(preview.projectId);
+    check(!authoring.has(previous.id), 'Generation is running. Wait before applying this draft.');
+    check(previous.revision === preview.revision, 'Project changed since this draft. Generate again before applying.');
+    const project = automationProject(previous);
+    validateGeneratedTest(project, preview.draft, preview.inspection);
+    authoring.add(previous.id);
+    try {
+      let test;
+      if (preview.testId) {
+        const target = project.tests.find((item) => item.id === preview.testId);
+        check(target, 'Test case no longer exists.');
+        for (const step of preview.draft.steps) {
+          const isKnown = !step.qaRequirementId || target.qa.manualSteps.some((item) => item.id === step.qaRequirementId);
+          check(isKnown, 'Unknown requirement mapping.');
+        }
+        test = await saveGeneratedSteps(previous.id, target, preview.draft.steps);
+      } else {
+        test = await authoringTool('studio_create_test', {
+          projectId: previous.id,
+          name: preview.draft.name,
+          steps: preview.draft.steps,
+        });
+      }
+      store.agentDrafts = store.agentDrafts.filter((draft) => draft.id !== preview.id);
+      const job = store.aiGenerations.find((item) => item.projectId === previous.id);
+      if (job) {
+        Object.assign(job, {
+          status: 'completed',
+          stage: 'completion',
+          finishedAt: new Date().toISOString(),
+          testId: test.id,
+          explanation: preview.draft.explanation,
+          warnings: preview.warnings,
+          error: undefined,
+        });
+      }
+      await persist();
+      await json(res, { test, status: 'not_run', explanation: preview.draft.explanation }, 201);
+    } finally {
+      authoring.delete(previous.id);
+    }
+  }
+
+  async function draftOrCreate(req, res, route, user) {
+    const input = await readBody(req);
+    const validPrompt =
+      typeof input.prompt === 'string' && input.prompt.trim() && input.prompt.length <= MAX_AI_PROMPT;
+    check(validPrompt, 'Describe your test in 1–12000 characters');
+    const serverIds = input.mcpServerIds || [];
+    check(Array.isArray(serverIds) && serverIds.length <= MAX_AI_MCP_SERVERS, 'Select up to 10 MCP servers');
+    if (serverIds.length && !can(user, 'useMcp')) {
+      await json(res, { error: 'Permission required: Use configured MCP servers.' }, 403);
+      return;
+    }
+    const servers = serverIds.map((id) => {
+      const server = store.settings.mcpServers.find((candidate) => candidate.id === id);
+      check(server, `Unknown MCP server: ${id}`);
+      return server;
+    });
+    const project = structuredClone(findAutomationProject(input.projectId));
+    if (input.testId !== undefined) {
+      check(typeof input.testId === 'string' && input.testId.trim(), 'Select a valid test case for Auto generator.');
+    }
+    const targetTest = input.testId ? project.tests.find((test) => test.id === input.testId) : null;
+    check(!input.testId || targetTest, 'Test case not found');
+    if (targetTest) check(targetTest.qa?.manualSteps?.length, 'Add QA requirements before using Auto generator.');
+    // Claude and ChatGPT use the signed-in user's own key; "studio" uses shared Model settings.
+    const engine = input.engine ?? store.userAi[user.id]?.engines?.automation ?? 'studio';
+    check(aiEngines.includes(engine), 'Choose Studio, Claude or ChatGPT for test generation');
+    const settings = engineSettings(store.settings, store.userAi[user.id], engine);
+    if (route === '/api/ai/draft') {
+      await json(res, await draftTest(settings, project, input.prompt, aiFetcher, { connections, servers }));
+      return;
+    }
+    if (authoring.has(project.id)) {
+      await json(
+        res,
+        {
+          error: 'Generation is already running for this project. Reconnect to its progress instead of starting another request.',
+          code: 'GENERATION_IN_PROGRESS',
+        },
+        409,
+      );
+      return;
+    }
+    await generateAutomation(res, input, project, targetTest, engine, structuredClone(settings), servers);
+  }
+
+  async function aiRoutes(req, res, route, url, user) {
+    if (route === '/api/ai/reasonx/start' && req.method === 'POST') {
+      const baseUrl = reasonxBaseUrl(store.settings.reasonxBaseUrl);
+      const apiKey = providerKey({
+        ...store.settings,
+        provider: 'reasonx',
+        apiKey: store.settings.apiKeys?.reasonx || '',
+      });
+      const probe = () => reasonxModelList({ fetcher: aiFetcher, baseUrl, apiKey });
+      await json(res, await reasonxRuntime.start(probe));
+      return true;
+    }
+    if (route === '/api/ai/status' && req.method === 'GET') {
+      const { settings } = store;
+      const isLocal = settings.provider === 'reasonx';
+      const local = isLocal
+        ? {
+            reasonxMode: settings.reasonxMode || 'auto',
+            knownModels: reasonxModels,
+            ...(await reasonxModelList({
+              fetcher: aiFetcher,
+              baseUrl: reasonxBaseUrl(settings.reasonxBaseUrl),
+              apiKey: providerKey(settings),
+            })),
+          }
+        : {};
+      await json(res, {
+        provider: settings.provider,
+        model: settings.model,
+        ...local,
+        hasApiKey: Boolean(providerKey(settings)),
+        mcpServers: can(user, 'useMcp') ? settings.aiMcpServerIds || [] : [],
+      });
+      return true;
+    }
+    if (route === '/api/ai/apply' && req.method === 'POST') {
+      await applyAgentDraft(res, await readBody(req));
+      return true;
+    }
+    if ((route === '/api/ai/draft' || route === '/api/ai/create') && req.method === 'POST') {
+      await draftOrCreate(req, res, route, user);
+      return true;
+    }
+    const cancelRoute = route.match(/^\/api\/generations\/([\w-]+)\/cancel$/);
+    if (cancelRoute && req.method === 'POST') {
+      await readBody(req);
+      const job = store.aiGenerations.find((item) => item.id === cancelRoute[1]);
+      const canSee = job && hasProject(user, job.projectId) && can(user, job.kind === 'requirements' ? 'qa' : 'automation');
+      check(canSee, 'Generation not found or access denied.');
+      check(job.status === 'running' && generationControllers.has(job.id), 'Generation is no longer running.');
+      generationControllers.get(job.id).abort();
+      job.stage = 'cancelling';
+      await json(res, { status: 'cancelling' }, 202);
+      return true;
+    }
+    return false;
+  }
+
   async function writeRecordingFile(snapshot) {
     const file = path.join(dataDir, 'recording.json');
     await writeFile(`${file}.tmp`, JSON.stringify(vault.encode(snapshot)));
@@ -1516,6 +2072,9 @@ async function createUnlockedStudio({
     workspaceRoutes,
     dataRoutes,
     runRoutes,
+    settingsRoutes,
+    mcpRoutes,
+    aiRoutes,
     recordingRoutes,
     debugRoutes,
     scheduleRoutes,
@@ -1658,6 +2217,7 @@ async function createUnlockedStudio({
       }),
     async close() {
       closing = true;
+      for (const controller of generationControllers.values()) controller.abort();
       clearInterval(scheduleTimer);
       await schedulerWork;
       await recording?.stop();
@@ -1665,6 +2225,7 @@ async function createUnlockedStudio({
       await execution;
       await Promise.allSettled([...debugSessions.values()].map((session) => session.close()));
       debugSessions.clear();
+      await connections.close();
       await auth.close();
       if (saveTimer) {
         clearTimeout(saveTimer);

@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "provider": "reasonx",
+  "model": "reasonx-v1",
+  "agents": [
+    { "id": "workspace-guide", "name": "Workspace guide", "description": "Suggests the next action and where to go in QA Studio or Automation Studio.", "mode": "fast", "profile": "profiles/workspace-guide.md", "inputs": ["Goal", "Selected workspace", "Relevant status"], "outputs": ["Next action", "Navigation steps"] },
+    { "id": "requirements-analyst", "name": "Requirements analyst", "description": "Turns a requirement into testable criteria and names what is missing.", "mode": "standard", "profile": "profiles/requirements-analyst.md", "inputs": ["Requirement", "Constraints", "Page metadata"], "outputs": ["Criteria", "Prerequisites", "Missing rules"] },
+    { "id": "test-case-designer", "name": "Test case designer", "description": "Drafts manual test cases from criteria for human review.", "mode": "standard", "profile": "profiles/test-case-designer.md", "inputs": ["Criteria", "Setup", "Scope"], "outputs": ["Manual draft cases", "Assumptions"] },
+    { "id": "automation-author", "name": "Automation author", "description": "Proposes browser steps from QA instructions and observed controls.", "mode": "standard", "profile": "profiles/automation-author.md", "inputs": ["QA instructions", "Observed controls"], "outputs": ["Proposed browser steps", "Locator gaps"] },
+    { "id": "coverage-reviewer", "name": "Coverage reviewer", "description": "Maps existing cases to criteria and finds gaps and duplicates.", "mode": "standard", "profile": "profiles/coverage-reviewer.md", "inputs": ["Criteria", "Existing case summaries"], "outputs": ["Coverage map", "Gaps", "Likely duplicates"] },
+    { "id": "execution-analyst", "name": "Execution analyst", "description": "Reads run results and evidence and suggests the next check.", "mode": "standard", "profile": "profiles/execution-analyst.md", "inputs": ["Run results", "Errors", "Evidence excerpts"], "outputs": ["Findings", "Possible causes", "Next check"] }
+  ]
+}

@@ -1,0 +1,1 @@
+Analyze the supplied welcome-form requirement. Return testable acceptance criteria, shared prerequisites and missing information. Do not generate cases or claim that the application has been tested.

@@ -1755,8 +1755,9 @@ function updateMcpFieldVisibility() {
   $('#mcp-stdio-fields').querySelectorAll('input,textarea').forEach((node) => {
     node.disabled = isHttp;
   });
+  // Hidden sections are disabled too, so a stale token or account is never submitted.
   $('#mcp-http-fields').querySelectorAll('input,select').forEach((node) => {
-    node.disabled = !isHttp;
+    node.disabled = !isHttp || Boolean(node.closest('[hidden]'));
   });
 }
 
@@ -4101,7 +4102,7 @@ async function init() {
     }
     [state, historyTools] = await Promise.all([api('/api/state'), loadRunHistoryTools()]);
     historyTools.recoverPlanState(state);
-    if (state.features?.settingsApi) await ensureSettings();
+    await ensureSettings();
 
     const params = new URLSearchParams(location.search);
     if (params.get('view') === 'plan') {

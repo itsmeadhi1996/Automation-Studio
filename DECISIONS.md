@@ -24,6 +24,14 @@ These fix the `recorder-requirements` timeout named in F19. Both depart from Ref
 - Selector uniqueness now counts matches inside open shadow roots. A bare `button` also matched the toolbox's own buttons, so selectors can now be longer, such as `form > button`.
 - The toolbox applies its CSS through `adoptedStyleSheets`, with the CSS text unchanged. `/demo`'s CSP blocked a `<style>` element, so the toolbox grew with long step names and covered `#message`.
 
+## MCP servers and agents
+
+- Saved stdio connections do not keep environment variables. Part 6 section 18 asks for them, but Reference C and 3.0 drop them from settings, the References take priority, and `storage.mjs` does not seal an `env` field. A stdio server that needs secrets in its environment must get them from the environment Studio was started in.
+- Only the two presets in Reference C are offered: Microsoft Playwright MCP and Atlassian MCP.
+- Generated agent profiles over 2,000 characters are rejected, following Reference E and Part 6 section 33 over Reference C's 12,000. A 400-word model answer can exceed this and would then need regenerating.
+- `mcp-server.mjs` signs in only when a tool first needs it, so `tools/list` works while Studio is stopped.
+- MCP clients default to a 60-second request timeout, so anything calling `studio_ai_draft_test` must raise it. The tool's own 1,600-second deadline has not been run in full. It was tested against a 310-second header delay.
+
 ## Sign-in and public pages
 
 - `login.html` loads only public styles (`theme.css`, `auth.css`), because `studio-design.css` needs a session. This also applies the saved dark theme on sign-in (F15).

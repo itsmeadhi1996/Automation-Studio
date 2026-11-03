@@ -1,0 +1,10 @@
+{
+  "title": "Welcome form",
+  "module": "Demo",
+  "description": "A visitor enters a name and selects Get started. The page displays Welcome, followed by that name. The requirement does not specify behavior for an empty name or the maximum name length.",
+  "observedControls": [
+    { "label": "Your name", "type": "text" },
+    { "text": "Get started", "type": "button" }
+  ],
+  "note": "Synthetic example for draft analysis; these are supplied facts, not a live inspection result."
+}
