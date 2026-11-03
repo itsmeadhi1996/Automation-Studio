@@ -1,0 +1,38 @@
+import { chromium, firefox } from 'playwright';
+
+const MISSING_BROWSER_ERROR = /executable|browser.*not found|not installed/i;
+const CHANNELS = { chrome: 'chrome', edge: 'msedge' };
+const INSTALL_NAMES = { chrome: 'chrome', edge: 'msedge', firefox: 'firefox' };
+
+export const browserLabels = Object.freeze({
+  chrome: 'Google Chrome',
+  firefox: 'Firefox',
+  edge: 'Microsoft Edge',
+});
+
+export function browserType(name = 'chrome') {
+  if (name === 'firefox') {
+    return firefox;
+  }
+  if (name === 'chrome' || name === 'edge' || !name) {
+    return chromium;
+  }
+  throw new Error(`Unsupported browser: ${name}`);
+}
+
+export async function launchBrowser(name = 'chrome', { headless = true, slowMo = 0 } = {}) {
+  const type = browserType(name);
+  const browserName = name || 'chrome';
+  const channel = CHANNELS[browserName];
+  try {
+    return await type.launch({ ...(channel ? { channel } : {}), headless, slowMo });
+  } catch (error) {
+    if (MISSING_BROWSER_ERROR.test(error.message)) {
+      throw new Error(
+        `${browserLabels[browserName]} is not installed or could not be found. ` +
+          `Install it with "npx playwright install ${INSTALL_NAMES[browserName]}" and retry.`,
+      );
+    }
+    throw error;
+  }
+}

@@ -4,6 +4,15 @@ import { copyFile, mkdir, open, readdir, readFile, rename, unlink, writeFile } f
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { chromium } from 'playwright';
+import { launchBrowser } from './browsers.mjs';
+import { queryDatabase } from './database.mjs';
+import { parseCsv } from './datasets.mjs';
+import { queryRunHistory } from './history-query.mjs';
+import { inspectPage, validateGeneratedTest } from './inspection.mjs';
+import { fileLimit, normalizeLocalData, readDataTable, resolveLocalValue } from './local-data.mjs';
+import { reportHtml } from './reports.mjs';
+import { executeRun, locator, preflight, startDebugSession } from './runner.mjs';
 import {
   adminOnlyPermissions,
   authorize,
@@ -15,9 +24,16 @@ import {
 } from './auth.mjs';
 import { automationProject, ensureAutomationCases, mergeAutomationProject } from './automation-model.mjs';
 import { contentTag, createStaticResponder, sendText } from './http-response.mjs';
-import { migrateRepository, normalizeProject, sampleProject } from './model.mjs';
+import {
+  migrateRepository,
+  normalizeProject,
+  prepareRun,
+  resolveLocator,
+  resolveValue,
+  sampleProject,
+} from './model.mjs';
 import { createMetrics, eventLoopDelay, storageHealth } from './ops.mjs';
-import { recoverTestPlans } from './public/run-history.js';
+import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans } from './public/run-history.js';
 import { createManualRun, updateManualRun } from './qa-model.mjs';
 import { requirementErrorUserMessage } from './requirement-errors.mjs';
 import { sourceVersion } from './runtime-version.mjs';
@@ -37,6 +53,12 @@ const BACKUP_NAME = /^backup-[\w-]+\.json$/;
 const SUPPORTED_BROWSERS = ['chrome', 'firefox', 'edge'];
 const ASSET_KEYS = ['screenshot', 'captureScreenshot', 'trace', 'fileId'];
 const REPOSITORY_FIELDS = ['objects', 'locatorTemplates', 'tests', 'prerequisites', 'repositoryLegacyObjects'];
+const MAX_GLOBALS = 500;
+const MAX_RUN_NAME = 120;
+const RETAIN_MAX = 10000;
+const TARGET_CHECK_TIMEOUT_MS = 10000;
+const ARTIFACT_NAME = /^[\w-]+\.(png|zip)$/;
+const REPORT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
 
 const PAGE_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
@@ -302,8 +324,19 @@ async function createUnlockedStudio({
   delete store.projectAccessRevision;
   store.workLog ||= [];
   store.workLogStartedAt ||= new Date().toISOString();
+  store.schedules ||= [];
 
   let activeRun = null;
+  let execution = null;
+  let runController = null;
+  let recording = null;
+  let startingBrowser = false;
+  const debugSessions = new Map();
+  const serviceGrants = new Map();
+
+  // A stopped recording only awaits review (it survives restarts); runs and debug may proceed.
+  const recordingLive = () => Boolean(recording && recording.status !== 'stopped');
+
   const accessRevision = (projectId) =>
     Object.hasOwn(store.projectAccessRevisions, projectId) ? store.projectAccessRevisions[projectId] : 0;
 
@@ -412,8 +445,57 @@ async function createUnlockedStudio({
     if (user?.role === 'admin') return true;
     return (
       store.projects.some((project) => hasProject(user, project.id) && containsAsset(project, name)) ||
-      store.runs.some((run) => isVisible(run) && containsAsset(run, name))
+      store.runs.some((run) => isVisible(run) && containsAsset(run, name)) ||
+      (isVisible(recording) && containsAsset(recording.summary(), name))
     );
+  }
+
+  async function readUpload(fileId) {
+    check(/^[a-f0-9-]{36}$/.test(fileId), 'Invalid uploaded file');
+    let entry;
+    try {
+      const file = path.join(dataDir, 'local-test-files', `${fileId}.json`);
+      entry = vault.decode(JSON.parse(await readFile(file, 'utf8'))).localDataFile;
+    } catch (error) {
+      if (error.code === 'ENOENT') throw new Error('Uploaded test data file is unavailable. Upload it again in Local Test Data.');
+      throw error;
+    }
+    const user = currentUser();
+    if (user && user.role !== 'admin' && entry.ownerId !== user.id && !canReadAsset(fileId)) {
+      throw httpError('Test data file access denied', 403);
+    }
+    return entry;
+  }
+
+  async function checkFileReferences(value) {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, item] of Object.entries(value)) {
+      if (key === 'fileId' && item) await readUpload(item);
+      else await checkFileReferences(item);
+    }
+  }
+
+  const dataOptions = (projectId) => ({
+    readUpload,
+    onGlobals: async (values) => {
+      const project = findProject(projectId);
+      const names = new Set([...Object.keys(project.globalVariables), ...Object.keys(values)]);
+      check(names.size <= MAX_GLOBALS, `Maximum ${MAX_GLOBALS} global variables`);
+      Object.assign(project.globalVariables, values);
+      project.revision = (project.revision || 0) + 1;
+      await persist();
+    },
+  });
+
+  function referencedArtifacts() {
+    const stepAssets = (step) => [step.screenshot, step.captureScreenshot, ...(step.targetScreenshots || [])];
+    return new Set([
+      ...store.runs.flatMap((run) => run.tests.flatMap((test) => [test.trace, ...test.steps.flatMap(stepAssets)])),
+      ...store.projects.flatMap((project) =>
+        [...project.tests, ...project.prerequisites].flatMap((test) => test.steps.map((step) => step.captureScreenshot)),
+      ),
+      ...(recording?.steps || []).map((step) => step.captureScreenshot),
+    ]);
   }
 
   function checkAssetReferences(value) {
@@ -478,6 +560,7 @@ async function createUnlockedStudio({
     const pathname = req.url.split('?')[0];
     if (requestScope.getStore()?.user && /^\/api\/(projects|local-data)(\/|$)/.test(pathname)) {
       checkAssetReferences(input);
+      await checkFileReferences(input);
     }
     return input;
   }
@@ -653,6 +736,13 @@ async function createUnlockedStudio({
     });
   }
 
+  const activityState = () => ({
+    nextTestNumber: store.nextTestNumber,
+    activeRun: isVisible(store.runs.find((run) => run.id === activeRun)) ? activeRun : null,
+    activeRecording: isVisible(recording) ? recording.summary() : null,
+    activeDebug: [...debugSessions.values()].map((session) => session.summary()).find(isVisible) || null,
+  });
+
   async function workspaceRoutes(req, res, route, url, user) {
     if (req.method === 'GET' && route === '/api/state') {
       const isAutomation = url.searchParams.get('workspace') === 'automation';
@@ -661,8 +751,14 @@ async function createUnlockedStudio({
         features: { nestedFolders: true, visibleReplay: true, caseHistory: true, generationRecovery: true },
         projects: isAutomation ? projects.map(automationProject) : projects.map((project) => projectForViewer(project)),
         runs: stateRuns().map((run) => runForViewer(run)),
-        nextTestNumber: store.nextTestNumber,
-        activeRun: isVisible(store.runs.find((run) => run.id === activeRun)) ? activeRun : null,
+        ...activityState(),
+      });
+      return true;
+    }
+    if (req.method === 'GET' && route === '/api/status') {
+      await json(res, {
+        runs: store.runs.filter(isVisible).slice(0, STATE_RUN_LIMIT).map((run) => runForViewer(run)),
+        ...activityState(),
       });
       return true;
     }
@@ -696,7 +792,8 @@ async function createUnlockedStudio({
     }
     if (route === '/api/backups/restore' && req.method === 'POST') {
       const input = await readBody(req);
-      check(!activeRun, 'Finish active sessions before restoring');
+      const isBusy = activeRun || startingBrowser || recording || debugSessions.size;
+      check(!isBusy, 'Finish active sessions before restoring');
       check(BACKUP_NAME.test(input.name), 'Invalid backup');
       const restored = vault.decode(JSON.parse(await readFile(path.join(dataDir, input.name), 'utf8')));
       check(Array.isArray(restored.projects) && restored.projects.length, 'Backup has no projects');
@@ -772,6 +869,21 @@ async function createUnlockedStudio({
       await createProject(res, user, await readBody(req));
       return true;
     }
+    const testsRoute = route.match(/^\/api\/projects\/([\w-]+)\/tests$/);
+    if (testsRoute && req.method === 'POST') {
+      const input = await readBody(req);
+      const previous = findProject(testsRoute[1]);
+      const counter = { nextTestNumber: store.nextTestNumber };
+      const tests = [...previous.tests, { name: input.name, steps: input.steps }];
+      const next = normalizeProject({ ...previous, tests }, previous, counter);
+      const test = next.tests.at(-1);
+      validateGeneratedTest(next, test);
+      store.projects[store.projects.indexOf(previous)] = next;
+      store.nextTestNumber = counter.nextTestNumber;
+      await persist();
+      await json(res, test, 201);
+      return true;
+    }
     const projectRoute = route.match(/^\/api\/projects\/([\w-]+)$/);
     if (projectRoute && req.method === 'PUT') {
       await updateProject(res, user, projectRoute[1], await readBody(req));
@@ -780,11 +892,394 @@ async function createUnlockedStudio({
     return false;
   }
 
+  async function dataRoutes(req, res, route, url, user) {
+    if (req.method !== 'POST') return false;
+    if (route === '/api/datasets/csv') {
+      const input = await readBody(req);
+      await json(res, { rows: parseCsv(input.csv) });
+      return true;
+    }
+    if (route === '/api/local-data/validate') {
+      const input = await readBody(req);
+      await json(res, { definitions: normalizeLocalData(input.definitions) });
+      return true;
+    }
+    if (route === '/api/local-data/file') {
+      const input = await readBody(req);
+      check(typeof input.name === 'string' && input.name.length <= 250, 'File name required');
+      const isValidContent =
+        typeof input.content === 'string' &&
+        input.content.length <= Math.ceil(fileLimit / 3) * 4 &&
+        /^[A-Za-z0-9+/]*={0,2}$/.test(input.content);
+      check(isValidContent, 'Upload a file of 1 MB or smaller');
+      const table = await readDataTable(input.name, Buffer.from(input.content, 'base64'));
+      const fileId = randomUUID();
+      const name = path.basename(input.name);
+      const uploads = path.join(dataDir, 'local-test-files');
+      await mkdir(uploads, { recursive: true });
+      const sealed = vault.encode({ localDataFile: { name, content: input.content, ownerId: user.id } });
+      await writeFile(path.join(uploads, `${fileId}.json`), JSON.stringify(sealed), { flag: 'wx' });
+      await json(res, { fileId, name, ...table }, 201);
+      return true;
+    }
+    if (route === '/api/local-data/preview') {
+      const input = await readBody(req);
+      const project = findProject(input.projectId);
+      const [entry] = normalizeLocalData([input.definition]);
+      const environment = project.environments.find((item) => item.id === project.activeEnvironmentId);
+      const context = {
+        globals: project.globalVariables,
+        environment: environment?.variables || {},
+        profiles: project.jdbcProfiles,
+      };
+      await json(res, await resolveLocalValue(entry, context, { readUpload }));
+      return true;
+    }
+    if (route === '/api/jdbc/test') {
+      const input = await readBody(req);
+      const result = await queryDatabase(input.profile || input, 'SELECT version()');
+      await json(res, { ok: true, server: result.rows[0]?.[0] });
+      return true;
+    }
+    if (route === '/api/jdbc/query') {
+      const input = await readBody(req);
+      findProject(input.projectId);
+      check(input.profile?.id === input.profileId, 'Profile ID mismatch');
+      await json(res, await queryDatabase(input.profile, input.query));
+      return true;
+    }
+    return false;
+  }
+
+  async function checkFirstTarget(project, input, result) {
+    const run = prepareRun(project, input);
+    const [firstTest] = run.tests;
+    const step = firstTest.steps.find((item) => item.action === 'navigate');
+    const entries = firstTest.localTestData || [];
+    const entry = entries.find(
+      (item) => item.name === step?.value && (step.valueMode === 'local' || (step.valueMode === 'global' && item.keepGlobal)),
+    );
+    if (entry && entry.source !== 'manual') {
+      result.targetSkipped = 'The initial URL is collected at run time. Preview its source in Local Test Data.';
+      return;
+    }
+    if (!step) return;
+    try {
+      const local = Object.fromEntries(entries.map((item) => [item.name, item.value]));
+      const context = { ...run.context, local, data: firstTest.dataRow || {} };
+      const target = entry ? entry.value : resolveValue(step, context);
+      const response = await fetch(target, { signal: AbortSignal.timeout(TARGET_CHECK_TIMEOUT_MS) });
+      await response.body?.cancel();
+      result.targetStatus = response.status;
+      if (response.status >= 400) {
+        result.ok = false;
+        result.errors.push(`Target returned HTTP ${response.status}. Check login, URL and VPN access.`);
+      }
+    } catch {
+      result.ok = false;
+      result.errors.push('Target is not reachable. Check the URL, network, and VPN connection.');
+    }
+  }
+
+  async function startRun(req, res, user) {
+    const input = await readBody(req);
+    if (recordingLive() || startingBrowser) {
+      await json(res, { error: 'Stop the active recording first.' }, 409);
+      return;
+    }
+    if (debugSessions.size) {
+      await json(res, { error: 'Finish or close the active Debug session first.' }, 409);
+      return;
+    }
+    if (activeRun) {
+      await json(res, { error: 'Another run is already active' }, 409);
+      return;
+    }
+    const project = findAutomationProject(input.projectId);
+    const readiness = preflight(project, input);
+    check(readiness.ok, readiness.errors.join('\n'));
+    const run = prepareRun(project, input);
+    run.mode = 'automation';
+    if (input.name) {
+      check(typeof input.name === 'string' && input.name.length <= MAX_RUN_NAME, 'Run name must be at most 120 characters');
+      run.name = input.name;
+    }
+    run.trace = input.trace === true;
+    run.replay = input.replay === true;
+    runController = new AbortController();
+    activeRun = run.id;
+    store.runs.unshift(run);
+    try {
+      await persist();
+    } catch (error) {
+      activeRun = null;
+      store.runs.shift();
+      throw error;
+    }
+    await json(res, { ...run, context: undefined }, 202);
+    const options = { signal: runController.signal, ...dataOptions(run.projectId) };
+    execution = executeRun(run, artifactsDir, options)
+      .finally(() => {
+        activeRun = null;
+        runController = null;
+        logWork(user, run.projectId, 'Automation run finished', `Run ${run.id}`, run.status);
+      })
+      .catch((error) => console.error('Run persistence failed:', error.message));
+  }
+
+  async function removeRunArtifacts(run) {
+    const used = referencedArtifacts();
+    const names = run.tests.flatMap((test) => [
+      test.trace,
+      ...test.steps.flatMap((step) => [step.screenshot, step.captureScreenshot, ...(step.targetScreenshots || [])]),
+    ]);
+    for (const name of names.filter(Boolean)) {
+      if (!used.has(name) && ARTIFACT_NAME.test(name)) await unlink(path.join(artifactsDir, name)).catch(() => {});
+    }
+  }
+
+  async function sendRunReport(res, run, testId, wantsPdf) {
+    const reportRun = testId ? caseRun(run, testId) : run;
+    if (!reportRun) {
+      await json(res, { error: 'This test case is not part of the run' }, 404);
+      return;
+    }
+    const html = await reportHtml(reportRun, artifactsDir);
+    if (!wantsPdf) {
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': REPORT_CSP });
+      res.end(html);
+      return;
+    }
+    const browser = await chromium.launch();
+    try {
+      const page = await browser.newPage();
+      await page.setContent(html);
+      await page.locator('details').evaluateAll((nodes) => nodes.forEach((node) => (node.open = true)));
+      const margin = { top: '12mm', bottom: '12mm', left: '12mm', right: '12mm' };
+      const pdf = await page.pdf({ format: 'A4', printBackground: true, margin });
+      res.writeHead(200, {
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="run-${run.id}.pdf"`,
+      });
+      res.end(pdf);
+    } finally {
+      await browser.close();
+    }
+  }
+
+  async function runRoutes(req, res, route, url, user) {
+    if (req.method === 'GET' && route === '/api/runs') {
+      const { searchParams } = url;
+      const scopeName = searchParams.get('scope');
+      const isIndividual = scopeName === 'individual-case';
+      const isScoped = isIndividual || scopeName === 'case';
+      const testId = searchParams.get('testId');
+      const projectId = searchParams.get('projectId');
+      if (isScoped) check(testId, 'Select a test case for its run history');
+      const runs = store.runs
+        .filter(
+          (run) =>
+            isVisible(run) &&
+            (!projectId || run.projectId === projectId) &&
+            (!testId || run.tests.some((test) => matchesCase(test, testId))) &&
+            (!isIndividual || isIndividualCaseRun(run, testId)),
+        )
+        .map((run) => {
+          const visibleRun = runForViewer(run);
+          return isScoped ? caseRun(visibleRun, testId) : visibleRun;
+        });
+      await json(res, queryRunHistory(runs, searchParams));
+      return true;
+    }
+    if (req.method === 'POST' && route === '/api/runs') {
+      await startRun(req, res, user);
+      return true;
+    }
+    if (req.method === 'POST' && route === '/api/history/retain') {
+      const isBusy = activeRun || debugSessions.size || startingBrowser || recordingLive();
+      check(!isBusy, 'Finish execution and recording before cleaning history');
+      const input = await readBody(req);
+      check(Number.isInteger(input.keep) && input.keep >= 1 && input.keep <= RETAIN_MAX, 'Keep between 1 and 10000 completed runs');
+      const completed = store.runs.filter((run) => run.status !== 'running');
+      const removed = new Set(completed.slice(input.keep).map((run) => run.id));
+      store.runs = store.runs.filter((run) => !removed.has(run.id));
+      await persist();
+      const used = referencedArtifacts();
+      for (const name of await readdir(artifactsDir)) {
+        if (ARTIFACT_NAME.test(name) && !used.has(name)) await unlink(path.join(artifactsDir, name));
+      }
+      await json(res, { removed: removed.size });
+      return true;
+    }
+    const cancelRoute = route.match(/^\/api\/runs\/([\w-]+)\/cancel$/);
+    if (cancelRoute && req.method === 'POST') {
+      await readBody(req);
+      check(activeRun === cancelRoute[1] && runController, 'This run is no longer active');
+      runController.abort();
+      await json(res, { status: 'cancelling' }, 202);
+      return true;
+    }
+    if (req.method === 'POST' && route === '/api/preflight') {
+      const input = await readBody(req);
+      const project = findAutomationProject(input.projectId);
+      const result = preflight(project, input);
+      if (result.ok && input.checkBrowser) {
+        let browser;
+        try {
+          browser = await launchBrowser(project.browser);
+          result.browserAvailable = true;
+        } catch (error) {
+          result.errors.push(error.message);
+          result.ok = false;
+        } finally {
+          await browser?.close();
+        }
+      }
+      if (result.ok && input.checkTarget) await checkFirstTarget(project, input, result);
+      await json(res, result);
+      return true;
+    }
+    if (req.method === 'POST' && route === '/api/inspect') {
+      const input = await readBody(req);
+      await json(res, await inspectPage(structuredClone(findProject(input.projectId)), input.url));
+      return true;
+    }
+    const runRoute = route.match(/^\/api\/runs\/([\w-]+)(\/report(?:\.pdf)?)?$/);
+    if (!runRoute) return false;
+    const run = findRun(runRoute[1]);
+    const reportPath = runRoute[2];
+    if (req.method === 'GET' && !reportPath) {
+      await json(res, runForViewer(run));
+      return true;
+    }
+    if (req.method === 'DELETE' && !reportPath) {
+      if (run.status === 'running' || activeRun === run.id || debugSessions.has(run.id)) {
+        await json(res, { error: 'Cannot delete an active run' }, 409);
+        return true;
+      }
+      store.runs = store.runs.filter((candidate) => candidate.id !== run.id);
+      await persist();
+      await removeRunArtifacts(run);
+      await json(res, { deleted: run.id });
+      return true;
+    }
+    if (req.method === 'GET' && reportPath) {
+      await sendRunReport(res, runForViewer(run), url.searchParams.get('testId'), reportPath === '/report.pdf');
+      return true;
+    }
+    return false;
+  }
+
+  async function debugRoutes(req, res, route) {
+    if (req.method !== 'POST') return false;
+    if (route === '/api/debug') {
+      const input = await readBody(req);
+      const isBusy = recordingLive() || startingBrowser || activeRun || debugSessions.size;
+      check(!isBusy, 'Finish the active recording, run or debug session first.');
+      const project = findAutomationProject(input.projectId);
+      const test = project.tests.find((item) => item.id === input.testId);
+      check(test, 'Test case not found');
+      check((test.dataRows?.length || 0) <= 1, 'Use Run test for datasets with multiple rows.');
+      const ready = preflight(project, { testId: test.id });
+      check(ready.ok, ready.errors.join('\n'));
+      let session;
+      startingBrowser = true;
+      try {
+        session = await startDebugSession(project, test.id, artifactsDir, dataOptions(project.id));
+      } finally {
+        startingBrowser = false;
+      }
+      debugSessions.set(session.run.id, session);
+      store.runs.unshift(session.run);
+      session.browser.on('disconnected', () => {
+        session
+          .close()
+          .then(() => {
+            debugSessions.delete(session.run.id);
+            return persist();
+          })
+          .catch(() => {});
+      });
+      try {
+        await persist();
+      } catch (error) {
+        debugSessions.delete(session.run.id);
+        await session.close();
+        store.runs.shift();
+        throw error;
+      }
+      await json(res, session.summary(), 201);
+      return true;
+    }
+    const locatorRoute = route.match(/^\/api\/debug\/([\w-]+)\/locator$/);
+    if (locatorRoute) {
+      const input = await readBody(req);
+      const session = debugSessions.get(locatorRoute[1]);
+      check(session && !session.busy, 'Open an idle debug session first');
+      const step = session.run.tests[0].steps[Number(input.index)];
+      check(step?.target, 'Select a step with a locator');
+      const { objects, locatorTemplates } = session.run.context;
+      const resolved = resolveLocator(step, objects, locatorTemplates);
+      const page = resolved.pageIndex === undefined ? session.page : session.pages[resolved.pageIndex];
+      check(page, 'Browser tab is not open yet');
+      const found = locator(page, step, objects, locatorTemplates);
+      const count = await found.count();
+      if (count === 1) await found.highlight();
+      await json(res, {
+        count,
+        unique: count === 1,
+        target: resolved.target,
+        ...(count > 1 ? { warning: `Ambiguous locator: ${count} elements match. Refine the locator or its container.` } : {}),
+      });
+      return true;
+    }
+    const sessionRoute = route.match(/^\/api\/debug\/([\w-]+)\/(step|close)$/);
+    if (!sessionRoute) return false;
+    const session = debugSessions.get(sessionRoute[1]);
+    check(session, 'Debug session not found or already closed.');
+    if (sessionRoute[2] === 'step') {
+      const current = await session.step();
+      await persist();
+      await json(res, current);
+      return true;
+    }
+    await session.close();
+    debugSessions.delete(sessionRoute[1]);
+    await persist();
+    await json(res, session.summary());
+    return true;
+  }
+
+  async function artifactRoutes(req, res, route) {
+    if (req.method !== 'GET' || !/^\/artifacts\/[\w-]+\.(png|zip)$/.test(route)) return false;
+    const name = path.basename(route);
+    if (!canReadAsset(name)) {
+      await json(res, { error: 'Artifact access denied' }, 403);
+      return true;
+    }
+    let content;
+    try {
+      content = await readFile(path.join(artifactsDir, name));
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await json(res, { error: 'Not found' }, 404);
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': route.endsWith('.zip') ? 'application/zip' : 'image/png' });
+    res.end(content);
+    return true;
+  }
+
   async function staticRoutes(req, res, route) {
     if (req.method !== 'GET' || !STATIC_ROUTES.has(route)) return false;
     const name = STATIC_ROUTES.get(route);
     res.setHeader('Content-Security-Policy', PAGE_CSP);
-    await serveStatic(req, res, name, CONTENT_TYPES[path.extname(name)]);
+    try {
+      await serveStatic(req, res, name, CONTENT_TYPES[path.extname(name)]);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      await json(res, { error: 'Not found' }, 404);
+    }
     return true;
   }
 
@@ -794,8 +1289,12 @@ async function createUnlockedStudio({
     manualRunRoutes,
     backupRoutes,
     workspaceRoutes,
+    dataRoutes,
+    runRoutes,
+    debugRoutes,
     projectRoutes,
     staticRoutes,
+    artifactRoutes,
   ];
 
   async function handleRequest(req, res) {
@@ -818,7 +1317,16 @@ async function createUnlockedStudio({
     if (await publicRoutes(req, res, route)) return;
 
     const scope = requestScope.getStore();
-    const user = auth.current(req);
+    let user = auth.current(req);
+    const grant = serviceGrants.get(req.headers.authorization?.replace(/^Bearer /, ''));
+    const grantCoversRoute =
+      route === '/api/inspect' ||
+      /^\/api\/projects\/[^/]+\/tests$/.test(route) ||
+      (route === '/api/runs' && req.method === 'POST');
+    if (grant && grantCoversRoute) {
+      user = auth.find(grant.userId);
+      scope.serviceProject = grant.projectId;
+    }
     scope.user = user;
 
     if (!PUBLIC_ROUTES.has(route)) {
@@ -841,9 +1349,17 @@ async function createUnlockedStudio({
     }
 
     if (user) {
-      const target = route.match(/^\/api\/(projects|runs|manual-runs)\/([\w-]+)/);
-      if (target?.[1] === 'projects') requireProject(target[2]);
-      else if (target) findRun(target[2]);
+      const target = route.match(/^\/api\/(projects|runs|manual-runs|recordings|debug|schedules)\/([\w-]+)/);
+      if (target) {
+        const [, kind, id] = target;
+        if (kind === 'projects') requireProject(id);
+        else if (kind === 'runs' || kind === 'manual-runs' || kind === 'debug') findRun(id);
+        else if (kind === 'recordings' && recording?.id === id) requireProject(recording.projectId);
+        else if (kind === 'schedules') {
+          const schedule = store.schedules.find((candidate) => candidate.id === id);
+          if (schedule) requireProject(schedule.projectId);
+        }
+      }
       if (url.searchParams.has('projectId') && route.startsWith('/api/')) {
         requireProject(url.searchParams.get('projectId'));
       }
@@ -894,6 +1410,11 @@ async function createUnlockedStudio({
     listen: () => new Promise((resolve) => server.listen(port, '127.0.0.1', resolve)),
     async close() {
       closing = true;
+      await recording?.stop();
+      runController?.abort();
+      await execution;
+      await Promise.allSettled([...debugSessions.values()].map((session) => session.close()));
+      debugSessions.clear();
       await auth.close();
       if (saveTimer) {
         clearTimeout(saveTimer);

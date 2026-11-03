@@ -1,0 +1,119 @@
+/* Colour tokens for both themes. Public, so the sign-in page can use them too. */
+:root {
+  color-scheme: light;
+  --ui-font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --ui-ink: #292a28;
+  --ui-soft: #60615b;
+  --ui-page: #e3e5e7;
+  --ui-card: #fffef7;
+  --ui-edge: #deded3;
+  --ui-accent: #363733;
+  --ui-tint: #f5f2df;
+  --ui-control: #898a7f;
+  --ui-focus: #8a6500;
+  --ui-shadow: none;
+  --ui-success: #23613f;
+  --ui-success-bg: #e9f4ed;
+  --ui-error: #a12c36;
+  --ui-error-bg: #fceef0;
+  --ui-warning: #795419;
+  --ui-warning-bg: #fcf4e4;
+  --ui-info: #245f83;
+  --ui-info-bg: #eaf3fa;
+  --studio-gold: #f4d45f;
+  --studio-gold-soft: #fff2ba;
+  --ui-input-bg: #fffefb;
+  --ui-primary-bg: #292a28;
+  --ui-primary-text: #fffef7;
+  --ui-primary-hover: #464740;
+}
+
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --ui-ink: #e2eee9;
+  --ui-soft: #acc0b5;
+  --ui-page: #121a18;
+  --ui-card: #1b2722;
+  --ui-edge: #34473e;
+  --ui-accent: #8bddb3;
+  --ui-tint: #24372d;
+  --ui-control: #7c9789;
+  --ui-focus: #8ac8f4;
+  --ui-success: #a5e3ba;
+  --ui-success-bg: #234532;
+  --ui-error: #ffb2ba;
+  --ui-error-bg: #462b30;
+  --ui-warning: #f0d39a;
+  --ui-warning-bg: #423a26;
+  --ui-info: #b0d8f5;
+  --ui-info-bg: #273d50;
+  --studio-gold: #b9d8a2;
+  --studio-gold-soft: #24372d;
+  --ui-input-bg: #223229;
+  --ui-primary-bg: #28694f;
+  --ui-primary-text: #f4fff8;
+  --ui-primary-hover: #327f5f;
+}
+
+html {
+  background: var(--ui-page);
+  color: var(--ui-ink);
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--ui-edge);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--ui-ink);
+  cursor: pointer;
+}
+
+.theme-toggle:hover {
+  background: var(--ui-tint);
+  border-color: var(--ui-control);
+}
+
+.theme-toggle:focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 3px;
+}
+
+.theme-toggle svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.65;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.theme-toggle .bulb-glass {
+  fill: var(--studio-gold);
+}
+
+html[data-theme="dark"] .theme-toggle .bulb-glass {
+  fill: none;
+}
+
+html[data-theme="dark"] .theme-toggle .bulb-rays {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

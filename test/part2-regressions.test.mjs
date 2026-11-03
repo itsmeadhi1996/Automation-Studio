@@ -144,6 +144,69 @@ test('project create, save and stale writes through the API', async (t) => {
   assert.equal(stale.data.code, 'EDIT_CONFLICT');
 });
 
+test('F2: run snapshots hide local values and sensitive steps from QA-only users', async (t) => {
+  const f = await fixture(t, 3515);
+  const [project] = f.studio.store.projects;
+  const secretStep = { name: 'Sensitive', action: 'fill', value: 'step-secret-value', sensitive: true, status: 'passed' };
+  f.studio.store.runs.unshift({
+    id: 'secret-run',
+    projectId: project.id,
+    projectName: project.name,
+    mode: 'automation',
+    status: 'passed',
+    startedAt: new Date().toISOString(),
+    context: { globals: { SECRET_GLOBAL: 'global-secret-value' } },
+    tests: [
+      {
+        id: 'case',
+        name: 'Case',
+        status: 'passed',
+        localValues: { LOCAL_VALUE: 'local-secret-value' },
+        dataRow: { ROW_VALUE: 'row-secret-value' },
+        steps: [secretStep],
+      },
+    ],
+  });
+  for (const route of ['/api/state', '/api/status', '/api/runs', '/api/runs/secret-run']) {
+    const response = await f.api(route, 'GET', undefined, f.qaCookie);
+    assert.equal(response.status, 200, route);
+    assert.match(JSON.stringify(response.data), /secret-run/, route);
+    assert.doesNotMatch(JSON.stringify(response.data), SECRET, route);
+  }
+  const admin = await f.api('/api/runs/secret-run', 'GET', undefined, f.adminCookie);
+  assert.equal(admin.data.tests[0].localValues.LOCAL_VALUE, 'local-secret-value');
+  assert.equal(admin.data.context, undefined);
+});
+
+test('the seed welcome test passes in Chrome through POST /api/runs', { timeout: 120000 }, async (t) => {
+  const f = await fixture(t, 3516);
+  const [project] = f.studio.store.projects;
+  const started = await f.api('/api/runs', 'POST', { projectId: project.id, testId: 'welcome' }, f.adminCookie);
+  assert.equal(started.status, 202, JSON.stringify(started.data));
+
+  let run;
+  const deadline = Date.now() + 90000;
+  while (Date.now() < deadline) {
+    run = (await f.api(`/api/runs/${started.data.id}`, 'GET', undefined, f.adminCookie)).data;
+    if (run.status !== 'running') break;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const failures = run.tests.flatMap((test) => test.steps.filter((step) => step.status !== 'passed'));
+  assert.equal(run.status, 'passed', JSON.stringify(failures));
+  assert.equal(run.tests[0].steps.length, 4);
+  assert.ok(run.tests[0].steps.every((step) => step.screenshot), 'every step has a screenshot');
+
+  const report = await f.api(`/api/runs/${run.id}/report`, 'GET', undefined, f.adminCookie);
+  assert.equal(report.status, 200);
+  assert.ok(report.data.includes('Check the welcome message'), 'the report lists the step');
+  assert.ok(!report.data.includes('Welcome, Alex!'), 'the report omits test values');
+  const screenshot = await fetch(`http://127.0.0.1:3516/artifacts/${run.tests[0].steps[0].screenshot}`, {
+    headers: { Cookie: f.adminCookie },
+  });
+  assert.equal(screenshot.status, 200);
+  assert.equal(screenshot.headers.get('content-type'), 'image/png');
+});
+
 test('seed project contains the welcome test against /demo', async (t) => {
   const f = await fixture(t, 3514);
   const [project] = f.studio.store.projects;

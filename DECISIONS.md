@@ -9,6 +9,20 @@ Choices made while building QA Studio 4.0 that the spec left open, or where a po
 - During Phase 2, both build agents imported and ran 3.0 modules to compare their output with 4.0: `public/locator-templates.js`, `public/run-history.js`, `model`, `qa-model`, `test-plan`, `local-data-schema`, `recorder-names`, `history-query`, `agent-workflow`, `requirements`, `requirement-errors` and `test-case-generator`. That went beyond the read-only access they were given. They report writing nothing to 3.0, and file timestamps agree. Those comparisons do not count as gate evidence, and later agents are told not to run 3.0 code.
 - 3.0's `integrations.mjs` has a modified time of 2026-11-03 22:17:24, which is after this spec was saved (22:15:57) and before the first 4.0 commit (22:23:43). This build did not make that change. The spec takes priority over that file wherever they differ.
 
+## Execution engine
+
+- `sslmode: 'prefer'` (F13) uses `rejectUnauthorized: false`, like libpq, and falls back to plain only when the server says it does not support SSL. This was checked against a fake server. A real TLS connection has not been tested.
+- A date-only `to` filter covers the whole UTC day, following Reference E over Reference B's plain `<=`.
+- An empty browser name reports Chrome, not Firefox.
+- Cancelling a run still relabels earlier genuine failures as `interrupted`, reproducing 3.0.
+- `report.counts.broken` is removed, per Part 2.
+
+## Sign-in and public pages
+
+- `login.html` loads only public styles (`theme.css`, `auth.css`), because `studio-design.css` needs a session. This also applies the saved dark theme on sign-in (F15).
+- `/style.css` stays signed-in only, per Reference A section 1.11. `/demo` is public, so it renders unstyled for a signed-out visitor, including inside test runs. This does not affect the demo's behaviour.
+- A missing page or artifact returns `Not found` rather than a message containing a file path.
+
 ## Requirement generation
 
 These differ from 3.0 on purpose:

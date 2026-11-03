@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <title>Sign in · QA Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/auth.css">
+  <script src="/theme.js"></script>
+  <script src="/login.js" defer></script>
+</head>
+<body class="login-page">
+  <main class="auth-shell">
+    <div class="login-layout">
+      <aside class="login-story" aria-label="About QA Studio">
+        <div class="login-brand">
+          <span class="login-mark">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h9a4 4 0 0 1 4 4v7M5 6v9a4 4 0 0 0 4 4h9M9 12l3 3 7-8"/></svg>
+          </span>
+          <span>QA Studio<small>QUALITY, IN FOCUS</small></span>
+        </div>
+        <div class="login-story-copy">
+          <span class="eyebrow">ONE CONNECTED WORKSPACE</span>
+          <h2>A little structure.<br>A lot of confidence.</h2>
+          <p>From the first test case to the final result. Keep your manual testing and automation together.</p>
+        </div>
+        <div class="login-workflow" aria-label="Plan, execute, and review your tests">
+          <div>
+            <span class="workflow-number">01</span>
+            <span>Plan with purpose<small>Give every scenario a clear path.</small></span>
+            <span class="workflow-check" aria-hidden="true">✓</span>
+          </div>
+          <div>
+            <span class="workflow-number">02</span>
+            <span>Test your way<small>Manual precision. Automated repetition.</small></span>
+            <span class="workflow-check" aria-hidden="true">✓</span>
+          </div>
+          <div>
+            <span class="workflow-number">03</span>
+            <span>See the whole picture<small>Every result, in one place.</small></span>
+            <span class="workflow-check" aria-hidden="true">✓</span>
+          </div>
+        </div>
+        <p class="login-story-footer">Your local workspace for better testing.</p>
+      </aside>
+      <section class="auth-card" aria-labelledby="title">
+        <div class="auth-card-top">
+          <span class="eyebrow">LET’S GET TO WORK</span>
+          <button type="button" class="theme-toggle" data-theme-toggle aria-label="Dark mode"></button>
+        </div>
+        <h1 id="title">Sign in</h1>
+        <p class="muted" id="description">Use the account provided by your administrator.</p>
+        <p id="error" class="auth-error" role="alert" hidden></p>
+        <form id="login" class="auth-form">
+          <label id="name-field" hidden>Display name<input name="name" maxlength="120" autocomplete="name"></label>
+          <label>Username<input name="username" required minlength="3" maxlength="80" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Enter your username"></label>
+          <label>Password<input name="password" type="password" required maxlength="256" autocomplete="current-password" placeholder="Enter your password"></label>
+          <label id="confirm-field" hidden>Confirm password<input name="confirm" type="password" maxlength="256" autocomplete="new-password"></label>
+          <button class="primary" type="submit" id="submit">Sign in</button>
+        </form>
+        <p class="muted" id="hint">Your administrator controls which studios you can access.</p>
+      </section>
+    </div>
+  </main>
+</body>
+</html>

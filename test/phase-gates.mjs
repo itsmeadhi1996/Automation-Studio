@@ -10,6 +10,13 @@ const gates = {
     ['test/plan-recovery-performance.test.mjs'],
     ['test/part2-regressions.test.mjs'],
   ],
+  3: [
+    ['test/page-readiness.test.mjs'],
+    ['test/locator-focus.test.mjs'],
+    ['test/ui-validate-fields.test.mjs'],
+    ['test/history-index.test.mjs'],
+    ['test/part2-regressions.test.mjs'],
+  ],
 };
 
 const phase = process.argv[2];
