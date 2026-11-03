@@ -1,0 +1,48 @@
+﻿import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { chromium } from 'playwright';
+import { createStudio } from './support.mjs';
+import { queryExecutionOverview, executionCsv } from '../execution-overview.mjs';
+import { authorize } from '../auth.mjs';
+const result=(id,status='passed',extra={})=>({id,tcNumber:1,name:'Login',status,duration:100,steps:[{name:'Sign in',status,duration:100}],...extra});
+const run=(id,tests,extra={})=>({id,projectId:'p',status:'passed',startedAt:'2026-01-01T12:00:00Z',tests,...extra});
+test('execution totals span all pages and group dataset rows with case-level outcomes',()=>{
+ const runs=Array.from({length:125},(_,i)=>run(String(i),[result('one')]));
+ runs.push(run('mixed',[result('one-row-1','passed',{sourceTestId:'one'}),result('one-row-2','failed',{sourceTestId:'one'}),result('two')],{status:'failed',suiteName:'Smoke'}));
+ runs.push(run('pending',[result('one','pending')],{status:'running'}));
+ const data=queryExecutionOverview(runs,new URLSearchParams({limit:'25',offset:'25'}));
+ assert.equal(data.total,128);assert.equal(data.rows.length,25);assert.equal(data.summary.counts.passed,126);assert.equal(data.summary.counts.failed,1);assert.equal(data.summary.counts.pending,1);assert.equal(data.summary.passRate,99);assert.equal(data.summary.cases,2);
+ const filtered=queryExecutionOverview(runs,new URLSearchParams({status:'failed',suite:'Smoke'}));assert.equal(filtered.total,1);assert.equal(filtered.rows[0].tests.length,2);assert.equal(filtered.rows[0].duration,200);
+ assert.equal(queryExecutionOverview(runs,new URLSearchParams({offset:'9999'})).offset,125);
+ assert.equal(queryExecutionOverview(runs,new URLSearchParams({export:'csv'})).rows.length,128);
+ assert.equal(queryExecutionOverview([],new URLSearchParams()).summary.passRate,null);
+ for(const params of [{from:'no'},{from:'2027-01-01',to:'2026-01-01'},{limit:'0'},{offset:'-1'},{status:'bogus'},{mode:'bogus'}])assert.throws(()=>queryExecutionOverview(runs,new URLSearchParams(params)),e=>e.status===400);
+ const csv=executionCsv([{...filtered.rows[0],name:'=1+2,"quoted"'}]);assert.match(csv,/'=1\+2,""quoted""/);
+ assert.throws(()=>authorize({role:'user',active:true,permissions:{qa:true}},'/api/automation/execution-overview','GET',new URL('http://localhost')),e=>e.status===403);
+});
+test('execution overview browser filters, details, export, navigation and project isolation',{timeout:90000},async t=>{
+ const storage=path.resolve('.test-output','execution-overview-'+Date.now()),studio=await createStudio({port:3363,storage});let browser;t.after(async()=>{await browser?.close();await studio.close();});await studio.listen();
+ const base='http://127.0.0.1:'+studio.server.address().port;
+ const api=async(url,method='GET',body)=>{const response=await fetch(base+url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});assert.ok(response.ok,await response.clone().text());return response.json();};
+ const p=await api('/api/projects','POST',{name:'Execution reports',tests:[{id:'login',name:'Login',steps:[{action:'wait',value:'0'}]}]});
+ const other=await api('/api/projects','POST',{name:'Empty project'});
+ studio.store.runs=Array.from({length:31},(_,i)=>run('report-'+i,[result('login',i%2?'failed':'passed',{name:'Login <script>bad()</script>',qa:{owner:'Sam'},steps:[{name:'Check dashboard',status:i%2?'failed':'passed',expectedResult:'Dashboard visible',actualResult:'Missing dashboard',error:i%2?'Element not found':'',duration:100}]})],{projectId:p.id,status:i%2?'failed':'passed',suiteName:'Smoke',startedAt:new Date(Date.UTC(2026,0,i+1,12)).toISOString()}));
+ const endpoint='/api/automation/execution-overview?projectId='+p.id;
+ assert.equal((await api(endpoint)).total,31);assert.equal((await api('/api/automation/execution-overview?projectId='+other.id)).total,0);
+ const csv=await fetch(base+endpoint+'&export=csv');assert.match(csv.headers.get('content-type'),/text\/csv/);assert.equal((await csv.text()).split('\r\n').length,32);
+ browser=await chromium.launch();const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.goto(base+'/automation?projectId='+p.id+'&view=execution');await page.waitForFunction(()=>document.querySelector('#execution-page')?.textContent==='1–25 of 31 case executions');
+ assert.equal(await page.locator('.execution-result').count(),25);await page.locator('.execution-result > summary').first().click();assert.match(await page.locator('.execution-result[open]').innerText(),/Dashboard visible/);assert.equal(await page.locator('#execution-results script').count(),0);
+ assert.match(await page.getByRole('link',{name:'Case HTML report',exact:true}).first().getAttribute('href'),/testId=login/);
+ await page.locator('#execution-next').click();await page.waitForFunction(()=>document.querySelector('#execution-page').textContent==='26–31 of 31 case executions');assert.equal(await page.locator('.execution-result').count(),6);
+ await page.getByLabel('Status',{exact:true}).selectOption('failed');await page.getByRole('button',{name:'Apply filters'}).click();await page.waitForFunction(()=>document.querySelector('#execution-page').textContent==='1–15 of 15 case executions');
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#execution-page')?.textContent==='1–15 of 15 case executions');
+ const download=page.waitForEvent('download');await page.getByRole('link',{name:'Export CSV'}).click();assert.equal((await download).suggestedFilename(),'tc-execution-report.csv');
+ await page.getByLabel('From date',{exact:true}).fill('2026-02-01');await page.getByLabel('Through date',{exact:true}).fill('2026-01-01');await page.getByRole('button',{name:'Apply filters'}).click();await page.locator('#execution-error').waitFor({state:'visible'});assert.match(await page.locator('#execution-error').innerText(),/on or before/);
+ await page.getByRole('button',{name:'Clear filters'}).click();await page.waitForFunction(()=>document.querySelector('#execution-page').textContent==='1–25 of 31 case executions');
+ await page.screenshot({path:path.join(storage,'execution-overview.png'),fullPage:true});
+ for(const width of [1024,768,390]){await page.setViewportSize({width,height:1000});assert.ok(await page.locator('.execution-overview').evaluate(el=>el.scrollWidth<=el.clientWidth+1),'Report content overflow '+width);}
+ await page.setViewportSize({width:1440,height:1000});await page.getByLabel('Project',{exact:true}).selectOption(other.id);await page.getByRole('heading',{name:'No matching executions'}).waitFor();assert.match(page.url(),new RegExp('projectId='+other.id));
+ await page.locator('.tabs [data-view="editor"]').click();await page.locator('#explorer [data-view="execution"]').click();await page.getByRole('heading',{name:'TC Execution overview'}).waitFor();assert.deepEqual(errors,[]);
+});

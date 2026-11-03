@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import { startRecording } from '../recorder.mjs';
+
+test('in-browser toolbox pauses, switches fetch mode, undoes and stops without recording its own clicks', { timeout: 60000 }, async t => {
+  const server = http.createServer((req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<button id="go">Go</button><p id="msg">Hello</p>'); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const session = await startRecording({ id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Toolbox test' }] }, 't', `http://127.0.0.1:${server.address().port}`, { headless: true });
+  t.after(() => session.stop());
+  const page = session.page;
+  const button = label => page.locator('qa-studio-recorder-toolbox').getByRole('button', { name: label, exact: true });
+  await button('Pause').waitFor();
+  await page.locator('#go').click();
+  await page.evaluate(() => window.__studioRecord({ action: 'barrier' }));
+  assert.equal(session.steps.length, 2);
+  await button('Pause').click();
+  assert.equal(session.status, 'paused');
+  await button('Resume').click();
+  assert.equal(session.status, 'recording');
+  await button('Verify text').click();
+  assert.equal(session.mode, 'text');
+  await button('Record actions').click();
+  await button('Undo last step').click();
+  assert.equal(session.steps.length, 1);
+  assert.ok(!session.steps.some(step => /Pause|Resume|Undo|Verify/.test(step.name)));
+  await button('Stop').click();
+  assert.equal(session.status, 'stopped');
+});

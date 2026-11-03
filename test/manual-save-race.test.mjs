@@ -1,0 +1,38 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import {chromium} from 'playwright';
+import {createStudio} from './support.mjs';
+
+test('manual result saves preserve notes typed during the response and lock competing outcomes',{timeout:30000},async t=>{
+  const studio=await createStudio({port:3386,storage:path.resolve('.test-output','manual-race-'+Date.now())});await studio.listen();
+  let browser;t.after(async()=>{await browser?.close();await studio.close();});
+  const base='http://127.0.0.1:3386';
+  const api=async(url,body)=>{const response=await fetch(base+url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});assert.ok(response.ok,await response.clone().text());return response.json();};
+  const project=await api('/api/projects',{name:'Manual concurrency',tests:[{id:'manual',name:'Two steps',inTestPlan:true,qa:{manualSteps:[{id:'first',instruction:'First step'},{id:'second',instruction:'Second step'}]}}]});
+  const run=await api('/api/manual-runs',{projectId:project.id,testIds:['manual'],name:'Manual notes'});
+  browser=await chromium.launch();const page=await browser.newPage();
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.goto(base+'/?projectId='+project.id+'#run/'+run.id);
+  const first=page.getByRole('textbox',{name:'Actual result for step 1'}),second=page.getByRole('textbox',{name:'Actual result for step 2'});
+  await first.fill('First saved note');
+  let release,received;const gate=new Promise(resolve=>release=resolve),saved=new Promise(resolve=>received=resolve);
+  t.after(()=>release());
+  await page.route('**/api/manual-runs/*/steps',async route=>{const response=await route.fetch();received();await gate;await route.fulfill({response});});
+  await page.getByRole('button',{name:'Pass',exact:true}).first().click();await saved;
+  assert.equal(await page.getByRole('button',{name:'Fail',exact:true}).nth(1).isDisabled(),true);
+  await first.fill('First edited during save');await second.fill('Second note entered during save');
+  await page.evaluate(()=>window.noteElement=document.querySelector('[data-note="1"]'));
+  release();await page.waitForFunction(()=>!document.querySelector('[data-index="1"][data-status="failed"]').disabled);
+  await page.unrouteAll({behavior:'wait'});
+  assert.equal(await first.inputValue(),'First edited during save');assert.equal(await second.inputValue(),'Second note entered during save');
+  assert.equal(await page.evaluate(()=>window.noteElement===document.querySelector('[data-note="1"]')&&document.activeElement===window.noteElement),true);
+  await page.getByRole('button',{name:'Fail',exact:true}).nth(1).click();
+  await page.waitForFunction(()=>!document.querySelector('[data-index="1"][data-status="failed"]').disabled);
+  assert.equal(studio.store.runs[0].tests[0].steps[1].actualResult,'Second note entered during save');
+  assert.equal(await first.inputValue(),'First edited during save');
+  await page.getByRole('button',{name:'Pass',exact:true}).first().click();
+  await page.waitForFunction(()=>!document.querySelector('[data-action="complete-manual"]').disabled);
+  assert.equal(studio.store.runs[0].tests[0].steps[0].actualResult,'First edited during save');
+  assert.deepEqual(errors,[]);
+});
