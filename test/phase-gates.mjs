@@ -4,6 +4,12 @@ import { spawnSync } from 'node:child_process';
 
 const gates = {
   1: [['test/ops.test.mjs'], ['test/auth.test.mjs', '--test-name-pattern=login throttles repeated failed attempts']],
+  2: [
+    ['test/model.test.mjs'],
+    ['test/generated-step-names.test.mjs'],
+    ['test/plan-recovery-performance.test.mjs'],
+    ['test/part2-regressions.test.mjs'],
+  ],
 };
 
 const phase = process.argv[2];
