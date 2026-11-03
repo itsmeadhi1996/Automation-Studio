@@ -39,7 +39,7 @@ test('inspection locators survive duplicate labels, long IDs, shadow roots and n
 });
 
 test('Auto generator updates the QA case and retains requirements and identity', {timeout:60000}, async t => {
-  const port=3234,base='http://127.0.0.1:'+port;
+  const port=3820,base='http://127.0.0.1:'+port;
   let fail=false,requests=0;
   const studio=await createStudio({port,storage:path.resolve('.test-output','auto-generator-'+Date.now()),aiFetcher:async(url,options)=>{
     requests++;

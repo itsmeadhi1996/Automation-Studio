@@ -29,7 +29,7 @@ test('requirements flag survives unrelated saves and mapped names until automati
 });
 
 test('debug controls lock immediately, stay locked across views and recover after close or failure',{timeout:60000},async t=>{
-  const studio=await createStudio({port:3297,storage:path.resolve('.test-output','editor-state-'+Date.now())});studio.store.projects[0].tests.forEach(test=>test.inTestPlan=true);await studio.listen();
+  const studio=await createStudio({port:3814,storage:path.resolve('.test-output','editor-state-'+Date.now())});studio.store.projects[0].tests.forEach(test=>test.inTestPlan=true);await studio.listen();
   const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});
   const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
   let active=null,starts=0,fail=false,release;
@@ -53,7 +53,7 @@ test('debug controls lock immediately, stay locked across views and recover afte
     await route.fulfill({status:201,json:active});
   });
   await page.route('**/api/debug/debug-session/close',async route=>{active=null;await route.fulfill({json:{status:'interrupted'}});});
-  await page.goto('http://127.0.0.1:3297/automation');
+  await page.goto('http://127.0.0.1:3814/automation');
   const debug=page.locator('[data-action="debug-test"]'),stop=page.locator('#stop-debug-button');await debug.waitFor();
   assert.equal(await stop.isVisible(),false);
   await debug.click();

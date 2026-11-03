@@ -10,6 +10,17 @@ const gates = {
     ['test/plan-recovery-performance.test.mjs'],
     ['test/part2-regressions.test.mjs'],
   ],
+  5: [
+    ['test/qa.test.mjs'],
+    ['test/test-plan.test.mjs'],
+    ['test/folders.test.mjs'],
+    ['test/project-access.test.mjs'],
+    ['test/action-readiness.test.mjs'],
+    ['test/replay.test.mjs'],
+    ['test/locator-templates.test.mjs'],
+    ['test/local-data.test.mjs'],
+    ['test/history-page.test.mjs'],
+  ],
   3: [
     ['test/page-readiness.test.mjs'],
     ['test/locator-focus.test.mjs'],

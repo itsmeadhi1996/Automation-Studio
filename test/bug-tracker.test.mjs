@@ -52,7 +52,7 @@ test('Jira configuration validates destinations and never exposes credentials',a
  await assert.rejects(verifyBugTracker(saved,jira.fetcher),/Create Issues permissions/);
 });
 test('API gates reporting, encrypts tokens, persists links and deduplicates issue creation',{timeout:30000},async t=>{
- const {api,jira,studio,storage}=await fixture(t,3294);
+ const {api,jira,studio,storage}=await fixture(t,3816);
  const p=(await api('/api/state')).data.projects[0];
  const draft={projectId:p.id,testId:p.tests[0].id,summary:'Unexpected result',description:'Steps\nExpected result\nActual result',requestId:randomUUID()};
  assert.equal((await api('/api/issues','POST',draft)).status,400);
@@ -84,7 +84,7 @@ test('API gates reporting, encrypts tokens, persists links and deduplicates issu
  await api('/api/bug-tracker','DELETE',{});assert.equal((await api('/api/bug-tracker')).data.hasApiKey,false);
  assert.equal((await api('/api/state')).data.reportedIssues.length,1);
  await studio.close();
- const reopened=await createStudio({port:3294,storage,bugTrackerFetcher:jira.fetcher});await reopened.listen();t.after(()=>reopened.close());
+ const reopened=await createStudio({port:3816,storage,bugTrackerFetcher:jira.fetcher});await reopened.listen();t.after(()=>reopened.close());
  assert.equal((await api('/api/state')).data.reportedIssues[0].key,'QA-42');
 });
 test('verification cannot reconnect a configuration removed while its check was in flight',{timeout:15000},async t=>{

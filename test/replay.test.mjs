@@ -64,8 +64,8 @@ test('Stop during the highlight pause prevents the action from executing',async 
 });
 
 test('Editor Replay requests visible playback and rejects a server without replay support',{timeout:30000},async t=>{
-  const studio=await createStudio({port:3294,storage:path.resolve('.test-output','replay-ui-'+Date.now())});studio.store.projects[0].tests.forEach(test=>test.inTestPlan=true);await studio.listen();
-  const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});const page=await browser.newPage(),base='http://127.0.0.1:3294';
+  const studio=await createStudio({port:3812,storage:path.resolve('.test-output','replay-ui-'+Date.now())});studio.store.projects[0].tests.forEach(test=>test.inTestPlan=true);await studio.listen();
+  const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});const page=await browser.newPage(),base='http://127.0.0.1:3812';
   await page.goto(base+'/automation');await page.getByRole('button',{name:'Replay',exact:true}).waitFor();
   let request;
   await page.route('**/api/runs',async route=>{request=route.request().postDataJSON();await route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:'Replay request captured'})});});

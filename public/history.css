@@ -1,0 +1,110 @@
+/* Run history. Filter layout is shared with TC Execution overview. */
+.history-view {
+  min-width: 0;
+}
+
+.history-view .page-heading {
+  flex-wrap: wrap;
+}
+
+.history-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 20px;
+}
+
+.history-filters label,
+.pagination label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.history-filters .form-hint,
+.history-filters .inline-actions {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.history-filters input {
+  width: 100%;
+  min-width: 0;
+}
+
+.history-view .run-card {
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.history-view .run-card > summary {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 20px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.history-view .run-card > summary::before {
+  content: '▸';
+}
+
+.history-view .run-card[open] > summary::before {
+  content: '▾';
+}
+
+.history-view .run-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.history-view .run-title small {
+  display: block;
+  margin-top: 6px;
+}
+
+.history-view .run-body {
+  padding: 0 20px 20px;
+}
+
+.history-view .run-test > summary {
+  flex-wrap: wrap;
+}
+
+.history-view .result-step {
+  overflow-wrap: anywhere;
+}
+
+.history-view .result-step-detail {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.history-view pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.history-view input:focus-visible,
+.history-view summary:focus-visible {
+  outline: 2px solid var(--ui-focus, #368c71);
+  outline-offset: 3px;
+}
+
+@media (max-width: 600px) {
+  .history-view .run-card > summary {
+    flex-wrap: wrap;
+    padding: 14px;
+  }
+
+  .history-view .run-title {
+    flex-basis: 70%;
+  }
+
+  .history-view .run-body {
+    padding: 0 12px 12px;
+  }
+}

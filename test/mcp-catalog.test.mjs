@@ -79,7 +79,7 @@ test('failed authentication is redacted and a corrected connection can retry',as
 
 test('catalog UI connects real Playwright and saves Jira MCP credentials encrypted',{timeout:60000},async t=>{
   const storage=path.resolve('.test-output',`mcp-catalog-${Date.now()}`);
-  const studio=await createStudio({port:3298,storage});await studio.listen();t.after(()=>studio.close());
+  const studio=await createStudio({port:3817,storage});await studio.listen();t.after(()=>studio.close());
   const base=`http://127.0.0.1:${studio.server.address().port}`;
   const api=async(route,method='GET',body)=>{
     const res=await fetch(base+route,{method,headers:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});

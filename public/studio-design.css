@@ -253,7 +253,8 @@ html:not([data-theme="dark"]) .automation-studio .tabs button {
   color: var(--ui-soft);
 }
 
-html:not([data-theme="dark"]) .automation-studio .tabs button.active {
+html:not([data-theme="dark"]) .automation-studio .tabs button.active,
+html:not([data-theme="dark"]) .automation-studio .tabs button.active:not(:disabled):hover {
   background: var(--ui-ink);
   color: #fffef7;
 }

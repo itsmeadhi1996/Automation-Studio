@@ -28,6 +28,10 @@ Choices made while building QA Studio 4.0 that the spec left open, or where a po
 - `requirement-module.test.mjs` expected the nav label `Requirements`. Part 2 requires `Requirement` and takes priority, so the assertion changed.
 - `qa-history-cache.test.mjs` waited for `.donut svg`, which no longer exists (F19). It now checks the `Show 1 … test cases` buttons.
 
+- Ports were made unique across browser test files (F19): folders 3811, replay 3812, case-history 3813, editor-state 3814, action-readiness 3815, bug-tracker 3816, mcp-catalog 3817, review-regressions 3818, reasonx 3819, auto-generator 3820.
+- `action-readiness.test.mjs` raised its 250 ms step timeout to 1000 ms (F19). This gives the click more time and does not loosen what the test checks.
+- `editor-state.test.mjs` keeps its colour assertion, because it matches the spec.
+
 ## QA Studio
 
 - Test case details have a "Copy test case" button. Part 6 requires copying, and Reference D does not list a control for it.

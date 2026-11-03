@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <title>Automation Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/ui.css">
+  <link rel="stylesheet" href="/history.css">
+  <link rel="stylesheet" href="/execution-overview.css">
+  <link rel="stylesheet" href="/studio-design.css">
+  <script src="/theme.js"></script>
+  <script src="/ui.js" defer></script>
+  <script src="/auth-ui.js" defer></script>
+  <script src="/folders.js" defer></script>
+  <script src="/local-data.js" defer></script>
+  <script src="/history-page.js" defer></script>
+  <script src="/execution-overview.js" defer></script>
+  <script src="/automation-cases.js" defer></script>
+  <script src="/locator-templates.js" defer></script>
+  <script src="/reasonx-models.js" defer></script>
+  <script src="/auto-generator-prompt.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="topbar">
+    <div class="studio-brand">
+      <button id="workspace-toggle" type="button" aria-label="Expand workspace" aria-controls="workspace-menu" aria-expanded="false" title="Expand workspace">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <rect x="3" y="4" width="18" height="16" rx="2"/>
+          <path d="M9 4v16"/>
+          <path class="workspace-chevron" d="m13 9 3 3-3 3"/>
+        </svg>
+        <span>Workspace</span>
+      </button>
+      <a class="brand" href="/" aria-label="QA Studio home">
+        <span class="brand-icon">
+          <svg class="studio-icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path class="icon-symbol" d="M5 6h9a4 4 0 0 1 4 4v7M5 6v9a4 4 0 0 0 4 4h9M9 12l3 3 7-8"/>
+          </svg>
+        </span>
+        <span>automation<span class="brand-sub">STUDIO</span></span>
+      </a>
+      <button type="button" class="theme-toggle" data-theme-toggle aria-label="Dark mode" aria-pressed="false" title="Normal mode (bulb on). Switch to dark mode."></button>
+    </div>
+    <div class="workspace-pickers">
+      <label>PROJECT<select id="project-select" aria-label="Project"></select></label>
+      <span class="divider"></span>
+      <label>ENVIRONMENT<select id="environment-select" aria-label="Environment"></select></label>
+      <span class="divider"></span>
+      <label>BROWSER
+        <select id="browser-select" aria-label="Browser">
+          <option value="chrome">Chrome</option>
+          <option value="firefox">Firefox</option>
+          <option value="edge">Edge</option>
+        </select>
+      </label>
+      <button class="quiet" data-action="ai-assistance">AI Assistance</button>
+    </div>
+    <div class="top-actions">
+      <button class="quiet" data-action="new-project">New project</button>
+      <button id="save-button" data-action="save">Save <kbd>Ctrl S</kbd></button>
+      <button data-action="run-suite">Run suite</button>
+      <button class="stop-debug" id="stop-debug-button" data-action="debug-close" hidden>Stop debug</button>
+      <button class="primary" id="run-button" data-action="run-test">Run test</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <aside class="sidebar" id="workspace-menu" aria-label="Workspace" hidden tabindex="-1">
+      <button id="workspace-close" type="button" aria-label="Hide workspace" title="Hide workspace">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+          <path d="m15 6-6 6 6 6"/>
+        </svg>
+        <span>Hide</span>
+      </button>
+      <div class="explorer-title">
+        <span>WORKSPACE</span>
+        <span class="local-pill"><i></i> Local</span>
+      </div>
+      <div id="explorer"></div>
+      <div class="sidebar-bottom">
+        <a id="qa-return" class="nav-item" href="/">← Back to QA Studio</a>
+        <button class="nav-item" data-action="view" data-view="vpn">OpenVPN</button>
+        <div class="engine-card">
+          <span class="engine-dot"></span>
+          <div>
+            <strong>Selected browser</strong>
+            <small>Set in the toolbar</small>
+          </div>
+          <span>↗</span>
+        </div>
+        <button class="nav-item" data-action="view" data-view="settings">Settings &amp; connections</button>
+      </div>
+    </aside>
+
+    <main id="main" tabindex="-1">
+      <div id="breadcrumbs"></div>
+      <nav class="tabs" aria-label="Workspace views">
+        <button data-action="view" data-view="cases">Test cases</button>
+        <button data-action="view" data-view="editor">Test editor</button>
+        <span id="run-count" hidden></span>
+      </nav>
+      <div id="content"></div>
+      <div id="execution"></div>
+    </main>
+  </div>
+
+  <footer class="statusbar">
+    <span id="save-status"><i></i> All changes saved</span>
+    <span id="connection-status">● Connected to local workspace</span>
+    <span>Automation Studio <b>4.0</b></span>
+  </footer>
+
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <form id="dialog-form">
+      <div class="dialog-heading">
+        <h2 id="dialog-title"></h2>
+        <button type="button" data-action="close-dialog" aria-label="Close dialog">×</button>
+      </div>
+      <div id="dialog-body"></div>
+      <div class="dialog-actions">
+        <button type="button" data-action="close-dialog">Cancel</button>
+        <button class="primary" type="submit" id="dialog-submit">Create</button>
+      </div>
+    </form>
+  </dialog>
+</body>
+</html>

@@ -36,8 +36,8 @@ test('case history preserves identity, dataset rows and case status inside a fai
 });
 
 test('case history includes containing suites and grouped runs across pagination, reports and polling',{timeout:60000},async t=>{
-  const storage=path.resolve('.test-output','case-history-'+Date.now()),studio=await createStudio({port:3295,storage});await studio.listen();
-  const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});const base='http://127.0.0.1:3295';
+  const storage=path.resolve('.test-output','case-history-'+Date.now()),studio=await createStudio({port:3813,storage});await studio.listen();
+  const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});const base='http://127.0.0.1:3813';
   const api=async(route,method='GET',body)=>{const response=await fetch(base+route,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});assert.ok(response.ok,await response.clone().text());return response.json();};
   const p=await api('/api/projects','POST',{name:'Case history',suites:[{id:'smoke',name:'Smoke suite'}],tests:[
     {inTestPlan:true,id:'alpha',automation:{id:'auto-alpha',tcNumber:20},name:'Alpha case',suiteId:'smoke',steps:[{name:'Alpha step',action:'wait',value:'0'}]},

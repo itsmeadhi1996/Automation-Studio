@@ -24,9 +24,9 @@ test('folder parents survive workspace saves; invalid trees and sibling duplicat
 
 test('QA nested creation defaults to the folder and Automation Studio preserves the tree',{timeout:90000},async t=>{
   const storage=path.resolve('.test-output',`folders-${Date.now()}`);
-  const studio=await createStudio({port:3293,storage});await studio.listen();
+  const studio=await createStudio({port:3811,storage});await studio.listen();
   const browser=await chromium.launch();t.after(async()=>{await browser.close();await studio.close();});
-  const base='http://127.0.0.1:3293';
+  const base='http://127.0.0.1:3811';
   const api=async(route,method='GET',body)=>{const response=await fetch(base+route,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});assert.ok(response.ok,await response.clone().text());return response.json();};
   let p=await api('/api/projects','POST',{name:'Folder browser',folders:[],tests:[]});
   const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];

@@ -86,7 +86,7 @@ test('execution date filters exclude unknown dates and include boundary dates',(
 });
 
 test('API rejects non-object JSON without creating projects or changing settings',async t=>{
-  const port=3396,studio=await createStudio({port,storage:path.resolve('.test-output','review-'+Date.now())});
+  const port=3818,studio=await createStudio({port,storage:path.resolve('.test-output','review-'+Date.now())});
   t.after(()=>studio.close());await studio.listen();
   const before=JSON.stringify({projects:studio.store.projects,settings:studio.store.settings});
   for(const [route,method] of [['/api/projects','POST'],['/api/settings','PUT']]){

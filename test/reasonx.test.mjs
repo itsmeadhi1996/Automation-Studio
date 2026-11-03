@@ -190,7 +190,7 @@ test('ReasonX can be selected, saved, reloaded and cleared without exposing its 
 
 test('ReasonX UI selects a real MCP server, inspects the page and saves validated steps without running them',{timeout:60000},async t=>{
   let requests=0,browser;
-  const studio=await createStudio({port:3396,storage:path.resolve('.test-output','reasonx-mcp-'+Date.now()),aiFetcher:async(url,options)=>{
+  const studio=await createStudio({port:3819,storage:path.resolve('.test-output','reasonx-mcp-'+Date.now()),aiFetcher:async(url,options)=>{
     const body=JSON.parse(options.body);requests++;
     assert.ok(body.messages.reduce((sum,m)=>sum+m.content.length,0)<=6000);
     assert.doesNotMatch(options.body,/submit_form/);
@@ -199,10 +199,10 @@ test('ReasonX UI selects a real MCP server, inspects the page and saves validate
     if(requests===2)return response('{"done":true}');
     const data=JSON.parse(body.messages[1].content).referenceData;
     const control=data.controls.find(el=>el.target==='name');assert.ok(control);
-    return response(JSON.stringify({name:'MCP welcome draft',explanation:'Read the welcome instructions.',steps:[{action:'navigate',value:'http://127.0.0.1:3396/demo'},{action:'fill',element:control.id,value:'Alex'}]}));
+    return response(JSON.stringify({name:'MCP welcome draft',explanation:'Read the welcome instructions.',steps:[{action:'navigate',value:'http://127.0.0.1:3819/demo'},{action:'fill',element:control.id,value:'Alex'}]}));
   }});
   t.after(async()=>{await browser?.close();await studio.close();});await studio.listen();
-  const base='http://127.0.0.1:3396';
+  const base='http://127.0.0.1:3819';
   const config=await fetch(base+'/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:'reasonx',apiKey:'test-secret',mcpServers:[{id:'docs',name:'Welcome docs',transport:'stdio',command:process.execPath,args:[path.resolve('test/fixtures/reasonx-context-server.mjs')]}],aiMcpServerIds:['docs']})});
   assert.equal(config.status,200);
   browser=await chromium.launch();const page=await browser.newPage();const errors=[];

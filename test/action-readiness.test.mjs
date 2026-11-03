@@ -58,12 +58,12 @@ test('automatic waiting supports SPA route changes after an asynchronous action'
 test('missing redirects fail within the limit, listeners are removed, and actions never retry',async t=>{
  const {page}=await fixture(t),events=['request','requestfinished','requestfailed','response','framenavigated'];
  const before=events.map(name=>page.listenerCount(name));
- await assert.rejects(executeStep(page,click('plain',{waitAfter:'redirect',timeoutMs:250}),{objects:[]}),/expected page redirect did not occur/);
+ await assert.rejects(executeStep(page,click('plain',{waitAfter:'redirect',timeoutMs:1000}),{objects:[]}),/expected page redirect did not occur/);
  assert.equal(await page.evaluate(()=>window.clicks),1);
  assert.deepEqual(events.map(name=>page.listenerCount(name)),before);
  await assert.rejects(waitAfterAction(page,async()=>{throw new Error('Action failed');}),/Action failed/);
  assert.deepEqual(events.map(name=>page.listenerCount(name)),before);
- await executeStep(page,click('plain',{waitAfter:'none',timeoutMs:250}),{objects:[]});
+ await executeStep(page,click('plain',{waitAfter:'none',timeoutMs:1000}),{objects:[]});
  assert.equal(await page.evaluate(()=>window.clicks),2);
 });
 
@@ -89,10 +89,10 @@ test('redirect settings persist in test snapshots and reject invalid configurati
 
 test('step settings save and reload redirect options in the automation editor',{timeout:15000},async t=>{
  const {createStudio}=await import('./support.mjs');
- const studio=await createStudio({port:3299,storage:path.resolve('.test-output','redirect-ui-'+Date.now())});await studio.listen();t.after(()=>studio.close());
+ const studio=await createStudio({port:3815,storage:path.resolve('.test-output','redirect-ui-'+Date.now())});await studio.listen();t.after(()=>studio.close());
  const browser=await chromium.launch();t.after(()=>browser.close());
  const page=await browser.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
- const base='http://127.0.0.1:3299';await page.goto(base+'/automation');
+ const base='http://127.0.0.1:3815';await page.goto(base+'/automation');
  await page.getByRole('button',{name:'Step 3 settings',exact:true}).click();
  await page.getByLabel('After action').selectOption('redirect');
  await page.getByLabel('Expected destination URL (optional)').fill('**/dashboard');

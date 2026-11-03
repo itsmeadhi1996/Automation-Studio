@@ -132,6 +132,13 @@
     'prompt-example': 'bolt',
     'close-dialog': 'close',
     'directory-move': 'move',
+    'editor-page': 'arrow',
+    'cases-page': 'arrow',
+    'cases-folder': 'suites',
+    'cases-run': 'runs',
+    'cases-run-selected': 'runs',
+    'cases-clear-filters': 'refresh',
+    'cases-clear-selection': 'close',
   };
 
   // Checked in order for actions without an explicit icon above.
