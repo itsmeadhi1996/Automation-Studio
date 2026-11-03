@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <title>My account · QA Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/auth.css">
+  <link rel="stylesheet" href="/studio-design.css">
+  <script src="/theme.js"></script>
+  <script src="/auth-ui.js" defer></script>
+  <script src="/account.js" defer></script>
+</head>
+<body class="account-page">
+  <main class="auth-shell">
+    <section class="auth-card account-card">
+      <div class="auth-card-top">
+        <span class="eyebrow">My account</span>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Dark mode"></button>
+      </div>
+      <h1 id="account-name">Your account</h1>
+      <p id="account-access" class="muted"></p>
+      <nav class="auth-actions" aria-label="Studios and account">
+        <a href="/">QA Studio</a>
+        <a href="/automation">Automation Studio</a>
+        <a href="/admin">Administration</a>
+        <button type="button" data-auth-logout>Sign out</button>
+      </nav>
+
+      <section id="ai" class="account-section" aria-labelledby="ai-title">
+        <h2 id="ai-title">AI test generation</h2>
+        <p class="muted">Connect your own Claude or ChatGPT API key to generate test cases in QA Studio (Requirements) and automation steps in Automation Studio. Keys are stored encrypted, are used only for your own generations and are never shown again. MCP context tools selected by your administrator are offered to the model as read-only tools when you have MCP access.</p>
+        <p id="ai-error" class="auth-error" role="alert" hidden></p>
+        <p id="ai-notice" class="auth-notice" role="status" hidden></p>
+        <form id="ai-form" class="auth-form">
+          <fieldset class="account-engine">
+            <legend>Default engine</legend>
+            <label>
+              QA Studio test case generation
+              <select name="qa">
+                <option value="studio">Studio settings (ReasonX, Qwen or local rules)</option>
+                <option value="claude">Claude</option>
+                <option value="chatgpt">ChatGPT</option>
+              </select>
+              <small>Used as the generation method for new requirements. You can still change it per requirement.</small>
+            </label>
+            <label>
+              Automation Studio step generation
+              <select name="automation">
+                <option value="studio">Studio Model settings</option>
+                <option value="claude">Claude</option>
+                <option value="chatgpt">ChatGPT</option>
+              </select>
+              <small>Used by AI Assistance and Auto generator. You can switch engines there before generating.</small>
+            </label>
+          </fieldset>
+          <fieldset class="account-engine" data-engine="claude">
+            <legend>Claude (Anthropic API)</legend>
+            <p class="engine-status muted" data-status="claude">Not connected</p>
+            <label>Model<input name="claudeModel" autocomplete="off" spellcheck="false" placeholder="claude-opus-5-5" required></label>
+            <label>API key<input name="claudeKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-…  (leave blank to keep the saved key)"></label>
+            <small>Create a key in the <a href="https://platform.claude.com" target="_blank" rel="noopener noreferrer">Claude Console ↗</a>. API usage is billed separately from Claude.ai plans.</small>
+            <div class="auth-actions">
+              <button type="button" data-test="claude">Test connection</button>
+              <button type="button" data-clear="claude">Remove key</button>
+            </div>
+          </fieldset>
+          <fieldset class="account-engine" data-engine="chatgpt">
+            <legend>ChatGPT (OpenAI API)</legend>
+            <p class="engine-status muted" data-status="chatgpt">Not connected</p>
+            <label>Model<input name="chatgptModel" autocomplete="off" spellcheck="false" placeholder="gpt-4.1-mini" required></label>
+            <label>API key<input name="chatgptKey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…  (leave blank to keep the saved key)"></label>
+            <small>Create a key in <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">OpenAI API keys ↗</a>. ChatGPT subscriptions and API billing are separate.</small>
+            <div class="auth-actions">
+              <button type="button" data-test="chatgpt">Test connection</button>
+              <button type="button" data-clear="chatgpt">Remove key</button>
+            </div>
+          </fieldset>
+          <button type="submit" class="primary">Save AI settings</button>
+        </form>
+      </section>
+
+      <section class="account-section" aria-labelledby="password-title">
+        <h2 id="password-title">Change password</h2>
+        <p class="muted">Changing your password signs you out of all sessions.</p>
+        <p id="error" class="auth-error" role="alert" hidden></p>
+        <form id="password-form" class="auth-form">
+          <label>Current password<input type="password" name="currentPassword" required autocomplete="current-password"></label>
+          <label>New password<input type="password" name="password" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <label>Confirm new password<input type="password" name="confirm" required minlength="12" maxlength="256" autocomplete="new-password"></label>
+          <button type="submit" class="primary">Change password</button>
+        </form>
+      </section>
+    </section>
+  </main>
+</body>
+</html>

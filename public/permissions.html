@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <title>User permissions · QA Studio</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/auth.css">
+  <link rel="stylesheet" href="/studio-design.css">
+  <script src="/theme.js"></script>
+  <script src="/auth-ui.js" defer></script>
+  <script src="/permissions.js" defer></script>
+</head>
+<body class="admin-shell admin-permissions">
+  <a class="admin-skip" href="#admin-main">Skip to content</a>
+  <aside class="admin-sidebar" aria-label="Administration workspace">
+    <a class="admin-brand" href="/">
+      <span class="admin-brand-mark">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 6h9a4 4 0 0 1 4 4v7M5 6v9a4 4 0 0 0 4 4h9M9 12l3 3 7-8"/></svg>
+      </span>
+      <span>QA Studio<small>QUALITY, IN FOCUS</small></span>
+    </a>
+    <div class="admin-space">
+      <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4ZM8 12l3 3 5-6"/></svg>
+      <div><strong>Administration</strong><small>Workspace settings &amp; access</small></div>
+    </div>
+    <p class="admin-nav-label">MANAGE WORKSPACE</p>
+    <nav class="admin-nav" aria-label="Administration">
+      <a href="/admin">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M13 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M17 3a4 4 0 0 1 0 8M22 21v-2a4 4 0 0 0-3-3.87"/></svg>
+        <span>Users</span>
+      </a>
+      <a href="/admin/permissions" aria-current="page">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4ZM8 12l3 3 5-6"/></svg>
+        <span>Permissions</span>
+      </a>
+      <a href="/admin/projects">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 7V4h7l2 3h9v13H3z"/></svg>
+        <span>Project management</span>
+      </a>
+    </nav>
+    <nav class="admin-nav admin-studios" aria-label="Studios and account">
+      <a href="/">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 3h7v7H3zM14 3h7v4h-7zM14 11h7v10h-7zM3 14h7v7H3z"/></svg>
+        <span>QA Studio</span>
+      </a>
+      <a href="/automation">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M13 2 4 14h7l-1 8 10-13h-8z"/></svg>
+        <span>Automation Studio</span>
+      </a>
+      <a href="/account">
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0M4 21v-2a8 8 0 0 1 16 0v2"/></svg>
+        <span>My account</span>
+      </a>
+    </nav>
+    <div class="admin-sidebar-footer">
+      <button type="button" data-auth-logout>
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M9 3H3v18h6M10 12h12m-4-4 4 4-4 4"/></svg>
+        Sign out
+      </button>
+      <p>Local workspace · v4.0</p>
+    </div>
+  </aside>
+
+  <div class="admin-workspace">
+    <header class="auth-header">
+      <p class="admin-location">
+        Workspace
+        <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="m9 5 7 7-7 7"/></svg>
+        <strong>Administration</strong>
+      </p>
+      <div class="admin-header-actions">
+        <span class="admin-access-label">
+          <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4ZM8 12l3 3 5-6"/></svg>
+          Administrator access
+        </span>
+        <button type="button" class="theme-toggle" data-theme-toggle aria-label="Dark mode"></button>
+      </div>
+    </header>
+
+    <main class="admin-main" id="admin-main" tabindex="-1">
+      <div class="admin-page-heading">
+        <span class="eyebrow">ACCESS, WITH INTENTION</span>
+        <h1>User permissions</h1>
+        <p>Choose a user and grant only the features they need. Creating projects and MCP access are off by default for regular users.</p>
+      </div>
+      <p id="permission-error" class="auth-error" role="alert" hidden></p>
+      <p id="permission-notice" class="auth-notice" role="status" hidden></p>
+
+      <div class="admin-grid">
+        <section class="admin-panel">
+          <div class="admin-panel-heading">
+            <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4ZM8 12l3 3 5-6"/></svg>
+            <h2>Assign access</h2>
+          </div>
+          <label>
+            User
+            <select id="permission-user" disabled>
+              <option>Loading users...</option>
+            </select>
+          </label>
+          <div class="auth-actions admin-panel-actions">
+            <button id="refresh-permissions" type="button" disabled>Refresh users</button>
+          </div>
+          <p id="user-description" class="muted"></p>
+          <form id="permissions-form" class="auth-form">
+            <div id="permission-fields"></div>
+            <p class="muted">Saving permissions signs the user out of existing sessions. They must sign in again to use their updated access. If another administrator changes this user, refresh and review the latest permissions before saving.</p>
+            <button class="primary" type="submit" id="save-permissions" disabled>Save permissions</button>
+          </form>
+        </section>
+
+        <section class="admin-panel">
+          <div class="admin-panel-heading">
+            <svg class="admin-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 4h7l2 2 2-2h7v15h-7l-2 2-2-2H3zM12 6v15"/></svg>
+            <h2>Permission guide</h2>
+          </div>
+          <p>Studio access includes editing and execution within that studio. Additional grants control project creation and MCP features.</p>
+          <div id="permission-guide"></div>
+          <h2>Always administrator-only</h2>
+          <div id="admin-only-guide"></div>
+          <p class="muted">Assign access to individual project dashboards, cases and reports on the Project management page.</p>
+          <a href="/admin">Create or manage user accounts</a>
+        </section>
+      </div>
+    </main>
+
+    <footer class="admin-footer">
+      <span>QA Studio · Administration</span>
+      <span>Quality, in focus.</span>
+    </footer>
+  </div>
+</body>
+</html>
