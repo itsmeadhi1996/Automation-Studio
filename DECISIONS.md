@@ -23,6 +23,16 @@ Choices made while building QA Studio 4.0 that the spec left open, or where a po
 - `/style.css` stays signed-in only, per Reference A section 1.11. `/demo` is public, so it renders unstyled for a signed-out visitor, including inside test runs. This does not affect the demo's behaviour.
 - A missing page or artifact returns `Not found` rather than a message containing a file path.
 
+## Changes to ported tests
+
+- `requirement-module.test.mjs` expected the nav label `Requirements`. Part 2 requires `Requirement` and takes priority, so the assertion changed.
+- `qa-history-cache.test.mjs` waited for `.donut svg`, which no longer exists (F19). It now checks the `Show 1 … test cases` buttons.
+
+## QA Studio
+
+- Test case details have a "Copy test case" button. Part 6 requires copying, and Reference D does not list a control for it.
+- Closing a manual run saves unsaved notes first.
+
 ## Requirement generation
 
 These differ from 3.0 on purpose:

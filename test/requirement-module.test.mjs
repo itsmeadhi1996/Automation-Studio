@@ -85,7 +85,7 @@ test('requirement UI saves an older project, generates, shows required columns a
   const f=await fixture(t,{aiFetcher:async()=>({ok:true,status:200,json:async()=>({done:true,done_reason:'stop',message:{content:JSON.stringify(draft)}})})});delete f.project.requirements;
   const browser=await chromium.launch({channel:'chrome'});t.after(()=>browser.close());const page=await browser.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(f.base+'/#requirements');await page.getByRole('heading',{name:'Requirement',exact:true}).waitFor();
-  const nav=await page.locator('nav[aria-label="Main navigation"] a').allTextContents();assert.equal(nav[1].trim(),'Requirements');
+  const nav=await page.locator('nav[aria-label="Main navigation"] a').allTextContents();assert.equal(nav[1].trim(),'Requirement');
   await page.getByRole('button',{name:'Add requirement',exact:true}).first().click();
   await page.getByLabel('Requirement title',{exact:true}).fill(fields.title);await page.getByLabel('URL',{exact:true}).fill(fields.url);await page.getByLabel('Description',{exact:true}).fill(fields.description);
   assert.equal(await page.getByRole('combobox',{name:'Generation method',exact:true}).inputValue(),'agent');

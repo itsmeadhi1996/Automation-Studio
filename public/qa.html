@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f6f8f7">
+  <title>QA Studio · Quality, in focus</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/qa.css">
+  <link rel="stylesheet" href="/theme.css">
+  <link rel="stylesheet" href="/ui.css">
+  <link rel="stylesheet" href="/requirements.css">
+  <link rel="stylesheet" href="/test-plan-page.css">
+  <link rel="stylesheet" href="/studio-design.css">
+  <script src="/theme.js"></script>
+  <script src="/ui.js" defer></script>
+  <script src="/auth-ui.js" defer></script>
+  <script src="/folders.js" defer></script>
+  <script src="/test-plan-page.js" defer></script>
+  <script src="/requirements.js" defer></script>
+  <script src="/qa.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <aside id="sidebar" class="sidebar"></aside>
+  <div class="workspace">
+    <header id="topbar" class="topbar"></header>
+    <nav id="breadcrumbs" class="breadcrumb-bar" aria-label="Breadcrumb"></nav>
+    <main id="main" tabindex="-1">
+      <div class="loading">Opening your workspace…</div>
+    </main>
+    <footer id="footer"></footer>
+  </div>
+  <dialog id="dialog" aria-labelledby="dialog-title">
+    <form id="dialog-form">
+      <div class="dialog-header">
+        <div>
+          <span class="eyebrow">QA STUDIO</span>
+          <h2 id="dialog-title"></h2>
+        </div>
+        <button type="button" class="icon-button" data-action="close-dialog" aria-label="Close dialog">✕</button>
+      </div>
+      <div id="dialog-body"></div>
+      <p id="dialog-error" class="error" role="alert" hidden></p>
+      <div class="dialog-footer">
+        <button type="button" class="button" data-action="close-dialog">Cancel</button>
+        <button type="submit" class="button primary" id="dialog-submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+  <div id="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

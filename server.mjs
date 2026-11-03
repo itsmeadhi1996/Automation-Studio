@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { copyFile, mkdir, open, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
@@ -8,6 +9,7 @@ import { chromium } from 'playwright';
 import { launchBrowser } from './browsers.mjs';
 import { queryDatabase } from './database.mjs';
 import { parseCsv } from './datasets.mjs';
+import { executionCsv, queryExecutionOverview } from './execution-overview.mjs';
 import { queryRunHistory } from './history-query.mjs';
 import { inspectPage, validateGeneratedTest } from './inspection.mjs';
 import { fileLimit, normalizeLocalData, readDataTable, resolveLocalValue } from './local-data.mjs';
@@ -36,6 +38,7 @@ import { createMetrics, eventLoopDelay, storageHealth } from './ops.mjs';
 import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans } from './public/run-history.js';
 import { createManualRun, updateManualRun } from './qa-model.mjs';
 import { requirementErrorUserMessage } from './requirement-errors.mjs';
+import { selectPlannedTests } from './test-plan.mjs';
 import { sourceVersion } from './runtime-version.mjs';
 import { createVault } from './storage.mjs';
 
@@ -53,6 +56,10 @@ const BACKUP_NAME = /^backup-[\w-]+\.json$/;
 const SUPPORTED_BROWSERS = ['chrome', 'firefox', 'edge'];
 const ASSET_KEYS = ['screenshot', 'captureScreenshot', 'trace', 'fileId'];
 const REPOSITORY_FIELDS = ['objects', 'locatorTemplates', 'tests', 'prerequisites', 'repositoryLegacyObjects'];
+const MAX_SCHEDULES = 100;
+const MAX_INTERVAL_MINUTES = 525600;
+const SCHEDULE_TICK_MS = 1000;
+const SCHEDULE_REQUEST_TIMEOUT_MS = 30000;
 const MAX_GLOBALS = 500;
 const MAX_RUN_NAME = 120;
 const RETAIN_MAX = 10000;
@@ -331,6 +338,8 @@ async function createUnlockedStudio({
   let runController = null;
   let recording = null;
   let startingBrowser = false;
+  let schedulerWork = null;
+  let scheduleTimer = null;
   const debugSessions = new Map();
   const serviceGrants = new Map();
 
@@ -1250,6 +1259,109 @@ async function createUnlockedStudio({
     return true;
   }
 
+  async function tickSchedules() {
+    const isBusy = closing || schedulerWork || activeRun || recordingLive() || debugSessions.size || startingBrowser;
+    if (isBusy) return;
+    const schedule = store.schedules.find((item) => item.enabled && Date.parse(item.nextRunAt) <= Date.now());
+    if (!schedule) return;
+    const owner = auth.find(schedule.ownerId);
+    if (!can(owner, 'automation') || !hasProject(owner, schedule.projectId)) {
+      schedule.enabled = false;
+      schedule.lastError =
+        'Schedule owner no longer has Automation Studio or project access. Recreate this schedule with an authorized account.';
+      await persist();
+      return;
+    }
+    schedule.nextRunAt = new Date(Date.now() + schedule.intervalMinutes * 60000).toISOString();
+    const serviceToken = randomBytes(32).toString('base64url');
+    serviceGrants.set(serviceToken, { userId: schedule.ownerId, projectId: schedule.projectId });
+    schedulerWork = (async () => {
+      try {
+        const response = await fetch(`http://127.0.0.1:${port}/api/runs`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${serviceToken}` },
+          body: JSON.stringify({ projectId: schedule.projectId, testId: schedule.testId }),
+          signal: AbortSignal.timeout(SCHEDULE_REQUEST_TIMEOUT_MS),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+        schedule.lastRunId = result.id;
+        schedule.lastError = null;
+      } catch (error) {
+        schedule.lastError = error.message;
+      }
+      await persist();
+    })();
+    try {
+      await schedulerWork;
+    } finally {
+      schedulerWork = null;
+      serviceGrants.delete(serviceToken);
+    }
+  }
+
+  async function scheduleRoutes(req, res, route, url, user) {
+    if (route === '/api/schedules' && req.method === 'GET') {
+      await json(res, { schedules: store.schedules.filter(isVisible) });
+      return true;
+    }
+    if (route === '/api/schedules' && req.method === 'POST') {
+      const input = await readBody(req);
+      const project = findAutomationProject(input.projectId);
+      const test = project.tests.find((item) => item.id === input.testId);
+      check(test, 'Choose a test to schedule');
+      selectPlannedTests(project, { testId: input.testId }, { requirePlan: false });
+      const validInterval =
+        Number.isInteger(input.intervalMinutes) &&
+        input.intervalMinutes >= 1 &&
+        input.intervalMinutes <= MAX_INTERVAL_MINUTES;
+      check(validInterval, 'Interval must be 1–525600 minutes');
+      check(store.schedules.length < MAX_SCHEDULES, 'Maximum 100 schedules');
+      const schedule = {
+        id: randomUUID(),
+        ownerId: user.id,
+        projectId: input.projectId,
+        testId: input.testId,
+        name: test.name,
+        intervalMinutes: input.intervalMinutes,
+        enabled: true,
+        nextRunAt: new Date(Date.now() + input.intervalMinutes * 60000).toISOString(),
+      };
+      store.schedules.push(schedule);
+      await persist();
+      await json(res, schedule, 201);
+      return true;
+    }
+    const scheduleRoute = route.match(/^\/api\/schedules\/([\w-]+)$/);
+    if (scheduleRoute && req.method === 'DELETE') {
+      if (!store.schedules.some((schedule) => schedule.id === scheduleRoute[1])) {
+        throw httpError('Schedule not found', 404);
+      }
+      store.schedules = store.schedules.filter((schedule) => schedule.id !== scheduleRoute[1]);
+      await persist();
+      await json(res, { deleted: true });
+      return true;
+    }
+    return false;
+  }
+
+  async function overviewRoutes(req, res, route, url) {
+    if (req.method !== 'GET' || route !== '/api/automation/execution-overview') return false;
+    const project = findProject(url.searchParams.get('projectId'));
+    const runs = store.runs.filter((run) => isVisible(run) && run.projectId === project.id);
+    const result = queryExecutionOverview(runs, url.searchParams);
+    if (url.searchParams.get('export') === 'csv') {
+      res.writeHead(200, {
+        'Content-Type': 'text/csv; charset=utf-8',
+        'Content-Disposition': 'attachment; filename="tc-execution-report.csv"',
+      });
+      res.end(`﻿${executionCsv(result.rows)}`);
+      return true;
+    }
+    await json(res, result);
+    return true;
+  }
+
   async function artifactRoutes(req, res, route) {
     if (req.method !== 'GET' || !/^\/artifacts\/[\w-]+\.(png|zip)$/.test(route)) return false;
     const name = path.basename(route);
@@ -1292,6 +1404,8 @@ async function createUnlockedStudio({
     dataRoutes,
     runRoutes,
     debugRoutes,
+    scheduleRoutes,
+    overviewRoutes,
     projectRoutes,
     staticRoutes,
     artifactRoutes,
@@ -1407,9 +1521,23 @@ async function createUnlockedStudio({
   return {
     server,
     store,
-    listen: () => new Promise((resolve) => server.listen(port, '127.0.0.1', resolve)),
+    tickSchedules,
+    listen: () =>
+      new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(port, '127.0.0.1', () => {
+          server.off('error', reject);
+          scheduleTimer = setInterval(() => {
+            tickSchedules().catch((error) => console.error('Schedule update failed:', error.message));
+          }, SCHEDULE_TICK_MS);
+          scheduleTimer.unref();
+          resolve();
+        });
+      }),
     async close() {
       closing = true;
+      clearInterval(scheduleTimer);
+      await schedulerWork;
       await recording?.stop();
       runController?.abort();
       await execution;

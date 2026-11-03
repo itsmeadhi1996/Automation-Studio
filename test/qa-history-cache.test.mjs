@@ -21,8 +21,8 @@ test('QA dashboard refreshes indexed outcomes after manual saves and project swi
   browser=await chromium.launch();const page=await browser.newPage();
   const errors=[];page.on('pageerror',error=>errors.push(error.message));
   await page.goto(base+'/?projectId='+project.id);
-  const chart=()=>page.locator('.donut svg');
-  await chart().waitFor();assert.equal(await chart().getAttribute('aria-label'),'0 passed, 0 failed, 0 blocked, 1 remaining');
+  const outcome=name=>page.getByRole('button',{name,exact:true}).waitFor();
+  await outcome('Show 1 in progress test cases');
   // Hold polling at 304 to prove the save response itself invalidates the index.
   await page.route('**/api/state',route=>route.fulfill({status:304}));
   await page.getByRole('link',{name:'Test runs',exact:true}).click();
@@ -31,10 +31,10 @@ test('QA dashboard refreshes indexed outcomes after manual saves and project swi
   await page.getByRole('button',{name:'Complete run',exact:true}).click();
   await page.getByRole('link',{name:'HTML report',exact:true}).waitFor();
   await page.getByRole('link',{name:'Overview',exact:true}).click();
-  await page.waitForFunction(()=>document.querySelector('.donut svg')?.getAttribute('aria-label')==='0 passed, 1 failed, 0 blocked, 0 remaining');
+  await outcome('Show 1 failed test cases');
   await page.getByLabel('Project',{exact:true}).selectOption(other.id);
-  assert.equal(await chart().getAttribute('aria-label'),'0 passed, 0 failed, 0 blocked, 1 remaining');
+  await outcome('Show 1 untested test cases');
   await page.getByLabel('Project',{exact:true}).selectOption(project.id);
-  assert.equal(await chart().getAttribute('aria-label'),'0 passed, 1 failed, 0 blocked, 0 remaining');
+  await outcome('Show 1 failed test cases');
   assert.deepEqual(errors,[]);
 });
