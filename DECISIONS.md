@@ -17,6 +17,13 @@ Choices made while building QA Studio 4.0 that the spec left open, or where a po
 - Cancelling a run still relabels earlier genuine failures as `interrupted`, reproducing 3.0.
 - `report.counts.broken` is removed, per Part 2.
 
+## Recording
+
+These fix the `recorder-requirements` timeout named in F19. Both depart from Reference B on purpose:
+
+- Selector uniqueness now counts matches inside open shadow roots. A bare `button` also matched the toolbox's own buttons, so selectors can now be longer, such as `form > button`.
+- The toolbox applies its CSS through `adoptedStyleSheets`, with the CSS text unchanged. `/demo`'s CSP blocked a `<style>` element, so the toolbox grew with long step names and covered `#message`.
+
 ## Sign-in and public pages
 
 - `login.html` loads only public styles (`theme.css`, `auth.css`), because `studio-design.css` needs a session. This also applies the saved dark theme on sign-in (F15).

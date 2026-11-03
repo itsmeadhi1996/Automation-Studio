@@ -21,6 +21,14 @@ const gates = {
     ['test/local-data.test.mjs'],
     ['test/history-page.test.mjs'],
   ],
+  6: [
+    ['test/recorder.test.mjs'],
+    ['test/recorder-evidence.test.mjs'],
+    ['test/recorder-names.test.mjs'],
+    ['test/recorder-requirements.test.mjs'],
+    ['test/recorder-toolbox.test.mjs'],
+    ['test/object-repository.test.mjs'],
+  ],
   3: [
     ['test/page-readiness.test.mjs'],
     ['test/locator-focus.test.mjs'],

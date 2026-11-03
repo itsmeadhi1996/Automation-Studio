@@ -27,6 +27,7 @@ import {
 import { automationProject, ensureAutomationCases, mergeAutomationProject } from './automation-model.mjs';
 import { contentTag, createStaticResponder, sendText } from './http-response.mjs';
 import {
+  mapRecordedSteps,
   migrateRepository,
   normalizeProject,
   prepareRun,
@@ -37,6 +38,7 @@ import {
 import { createMetrics, eventLoopDelay, storageHealth } from './ops.mjs';
 import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans } from './public/run-history.js';
 import { createManualRun, updateManualRun } from './qa-model.mjs';
+import { startRecording } from './recorder.mjs';
 import { requirementErrorUserMessage } from './requirement-errors.mjs';
 import { selectPlannedTests } from './test-plan.mjs';
 import { sourceVersion } from './runtime-version.mjs';
@@ -259,6 +261,7 @@ export async function createStudio(options = {}) {
 async function createUnlockedStudio({
   port = Number(process.env.PORT || DEFAULT_PORT),
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
+  recordingLauncher = startRecording,
 } = {}) {
   const dataDir = path.join(storage, 'data');
   const artifactsDir = path.join(storage, 'artifacts');
@@ -1259,6 +1262,116 @@ async function createUnlockedStudio({
     return true;
   }
 
+  async function writeRecordingFile(snapshot) {
+    const file = path.join(dataDir, 'recording.json');
+    await writeFile(`${file}.tmp`, JSON.stringify(vault.encode(snapshot)));
+    await rename(`${file}.tmp`, file);
+  }
+
+  function restoreRecordingDraft(saved) {
+    return {
+      ...structuredClone(saved),
+      status: 'stopped',
+      saving: false,
+      summary() {
+        const { summary, save, stop, ...data } = this;
+        return data;
+      },
+      async save() {
+        store.recording = structuredClone(this.summary());
+        await writeRecordingFile(store.recording);
+        await persist();
+      },
+      async stop() {
+        await this.save();
+        return this.summary();
+      },
+    };
+  }
+
+  async function recordingRoutes(req, res, route) {
+    if (req.method !== 'POST') return false;
+    if (route === '/api/recordings') {
+      const input = await readBody(req);
+      const isBusy = recording || startingBrowser || activeRun || debugSessions.size;
+      check(!isBusy, 'Finish the active recording, run, or debug session first.');
+      startingBrowser = true;
+      try {
+        const project = findAutomationProject(input.projectId);
+        recording = await recordingLauncher(project, input.testId, input.url, { artifacts: artifactsDir });
+        recording.onChange = writeRecordingFile;
+        await recording.save();
+        await json(res, recording.summary(), 201);
+      } finally {
+        startingBrowser = false;
+      }
+      return true;
+    }
+    const mappingsRoute = route.match(/^\/api\/recordings\/([\w-]+)\/mappings$/);
+    if (mappingsRoute) {
+      check(recording?.id === mappingsRoute[1], 'Recording not found');
+      check(recording.status === 'stopped', 'Stop and review the recording before mapping steps');
+      const input = await readBody(req);
+      const project = findAutomationProject(recording.projectId);
+      const test = project.tests.find((item) => item.id === recording.testId);
+      check(test, 'Linked QA Studio test case was not found');
+      const previous = recording.steps;
+      recording.steps = mapRecordedSteps(previous, test.qa?.manualSteps || [], input.mappings);
+      try {
+        await recording.save();
+      } catch (error) {
+        recording.steps = previous;
+        throw error;
+      }
+      await json(res, recording.summary());
+      return true;
+    }
+    const modeRoute = route.match(/^\/api\/recordings\/([\w-]+)\/mode$/);
+    if (modeRoute) {
+      const input = await readBody(req);
+      check(recording?.id === modeRoute[1] && recording.status !== 'stopped', 'No active recording');
+      check(['actions', 'visible', 'text', 'value'].includes(input.mode), 'Invalid recording mode');
+      recording.mode = input.mode;
+      const frames = recording.context.pages().flatMap((page) => page.frames());
+      await Promise.allSettled(
+        frames.map((frame) =>
+          frame.evaluate((mode) => {
+            window.__studioRecorderMode = mode;
+          }, input.mode),
+        ),
+      );
+      await recording.save();
+      await json(res, recording.summary());
+      return true;
+    }
+    const actionRoute = route.match(/^\/api\/recordings\/([\w-]+)\/(pause|resume|stop|discard)$/);
+    if (!actionRoute) return false;
+    check(recording?.id === actionRoute[1], 'Recording not found');
+    const action = actionRoute[2];
+    if (action === 'pause' || action === 'resume') {
+      check(recording.status !== 'stopped', 'Recording is already stopped');
+      recording.status = action === 'pause' ? 'paused' : 'recording';
+      await recording.save();
+    } else {
+      await recording.stop();
+    }
+    const result = recording.summary();
+    if (action === 'stop') {
+      store.recording = structuredClone(result);
+      await persist();
+    }
+    if (action === 'discard') {
+      store.recording = null;
+      await persist();
+      await unlink(path.join(dataDir, 'recording.json')).catch((error) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
+      recording = null;
+    }
+    await json(res, result);
+    return true;
+  }
+
   async function tickSchedules() {
     const isBusy = closing || schedulerWork || activeRun || recordingLive() || debugSessions.size || startingBrowser;
     if (isBusy) return;
@@ -1403,6 +1516,7 @@ async function createUnlockedStudio({
     workspaceRoutes,
     dataRoutes,
     runRoutes,
+    recordingRoutes,
     debugRoutes,
     scheduleRoutes,
     overviewRoutes,
@@ -1514,6 +1628,14 @@ async function createUnlockedStudio({
       }
     }),
   );
+
+  try {
+    store.recording = vault.decode(JSON.parse(await readFile(path.join(dataDir, 'recording.json'), 'utf8')));
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
+  // Drafts recover after a restart, but their browser sessions do not resume.
+  if (store.recording) recording = restoreRecordingDraft(store.recording);
 
   if (repositoryMigrated) await backup();
   await persist();
