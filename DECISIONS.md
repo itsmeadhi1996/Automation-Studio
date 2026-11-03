@@ -47,6 +47,9 @@ These fix the `recorder-requirements` timeout named in F19. Both depart from Ref
 - `action-readiness.test.mjs` raised its 250 ms step timeout to 1000 ms (F19). This gives the click more time and does not loosen what the test checks.
 - `editor-state.test.mjs` keeps its colour assertion, because it matches the spec.
 
+- `requirement-module.test.mjs` no longer runs `generateRequirementDraft` with provider `reasonx`. Part 2 removes that unreachable branch and takes priority over Reference E, so the function now refuses `reasonx`. ReasonX requirements go through `runRequirementAgent`, which has its own tests.
+- `test-case-app.test.mjs` now uses `#requirement-feedback` instead of an ambiguous alert selector (F19).
+
 ## QA Studio
 
 - Test case details have a "Copy test case" button. Part 6 requires copying, and Reference D does not list a control for it.

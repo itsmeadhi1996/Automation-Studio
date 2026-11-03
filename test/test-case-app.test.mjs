@@ -50,10 +50,10 @@ test('local requirement UI generates, filters, edits, exports and keeps edits on
   await page.getByLabel('Generation method',{exact:true}).selectOption('rules');
   await page.getByText('Fields, controls, and constraints (optional)',{exact:true}).click();
   await page.getByLabel('Page metadata',{exact:true}).fill('{invalid');await page.getByRole('button',{name:'Generate Test Cases',exact:true}).click();
-  await page.getByRole('alert').filter({hasText:'The optional page details could not be read.'}).waitFor();
+  await page.locator('#requirement-feedback').filter({hasText:'The optional page details could not be read.'}).waitFor();
   await page.getByText('Fields, controls, and constraints (optional)',{exact:true}).click();
   await page.getByLabel('Page metadata',{exact:true}).fill('{"fields":"incorrect"}');await page.getByRole('button',{name:'Generate Test Cases',exact:true}).click();
-  await page.getByRole('alert').filter({hasText:'The list of page fields could not be read.'}).waitFor();
+  await page.locator('#requirement-feedback').filter({hasText:'The list of page fields could not be read.'}).waitFor();
   assert.doesNotMatch(await page.locator('#requirement-feedback').innerText(),/pageMetadata|must be an array|Invalid generation input/);
   await page.getByText('Fields, controls, and constraints (optional)',{exact:true}).click();
   await page.getByLabel('Page metadata',{exact:true}).fill(JSON.stringify({title:'Registration page',url:requirement.url,...requirement.pageMetadata,fields:[requirement.pageMetadata.fields[0],{name:'Password',type:'password',constraints:{minLength:4,maxLength:6}}]}));

@@ -52,7 +52,23 @@ import { createMetrics, eventLoopDelay, storageHealth } from './ops.mjs';
 import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans } from './public/run-history.js';
 import { createManualRun, updateManualRun } from './qa-model.mjs';
 import { startRecording } from './recorder.mjs';
+import { requireAgentModel, runRequirementAgent } from './requirement-agent.mjs';
 import { requirementErrorUserMessage } from './requirement-errors.mjs';
+import {
+  generateCloudRequirementDraft,
+  generateRequirementDraft,
+  requireGenerationModel,
+} from './requirement-generation.mjs';
+import { inspectRequirementApp } from './requirement-inspection.mjs';
+import {
+  identifyRequirementCase,
+  normalizeRequirementDrafts,
+  requirementFields,
+  requirementFingerprint,
+} from './requirements.mjs';
+import { generateQwenRequirementDraft } from './qwen-requirements.mjs';
+import { generatedCasesToQa, generateTestCases, metadataFromInspection } from './test-case-generator.mjs';
+import { generateRequirementTestSteps, inspectedNavigationLinks } from './test-step-generator.mjs';
 import { selectPlannedTests } from './test-plan.mjs';
 import { sourceVersion } from './runtime-version.mjs';
 import { createVault } from './storage.mjs';
@@ -71,6 +87,12 @@ const BACKUP_NAME = /^backup-[\w-]+\.json$/;
 const SUPPORTED_BROWSERS = ['chrome', 'firefox', 'edge'];
 const ASSET_KEYS = ['screenshot', 'captureScreenshot', 'trace', 'fileId'];
 const REPOSITORY_FIELDS = ['objects', 'locatorTemplates', 'tests', 'prerequisites', 'repositoryLegacyObjects'];
+const MAX_REQUIREMENT_BATCH = 1000;
+const MAX_REQUIREMENT_DRAFTS = 1000;
+const MAX_PROJECT_TESTS = 1000;
+const MAX_GENERATION_WARNINGS = 30;
+const REQUIREMENT_ROUTE =
+  /^\/api\/projects\/([\w-]+)\/requirements(?:\/([\w-]+))?(?:\/(generate|approve|drafts|cases)(?:\/([\w-]+)(?:\/(generate-steps))?)?)?$/;
 const MAX_AI_PROMPT = 12000;
 const MAX_AI_MCP_SERVERS = 10;
 const GENERATION_ATTEMPTS = 2;
@@ -280,6 +302,7 @@ async function createUnlockedStudio({
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
   recordingLauncher = startRecording,
   aiFetcher = fetch,
+  requirementInspector = inspectRequirementApp,
   reasonxRuntime = createReasonxRuntime({
     home: process.env.REASONX_HOME || path.resolve(appRoot, '../../../For Ai/aiResoningAgent'),
   }),
@@ -1818,6 +1841,403 @@ async function createUnlockedStudio({
     return false;
   }
 
+  // ---- Requirements ------------------------------------------------------------
+
+  const isValidIdSelection = (ids) =>
+    Array.isArray(ids) &&
+    ids.length > 0 &&
+    ids.length <= MAX_REQUIREMENT_BATCH &&
+    ids.every((id) => typeof id === 'string') &&
+    new Set(ids).size === ids.length;
+
+  function isSupportedRequirementRequest(method, requirementId, operation, itemId, stepOperation) {
+    if (!requirementId) return !operation && method === 'POST';
+    if (!operation) return method === 'PUT' || method === 'DELETE';
+    if (operation === 'generate' || operation === 'approve') return !itemId && method === 'POST';
+    if (operation === 'drafts') {
+      if (stepOperation) return false;
+      return itemId ? method === 'PUT' || method === 'DELETE' : method === 'DELETE';
+    }
+    return Boolean(itemId && stepOperation === 'generate-steps' && method === 'POST');
+  }
+
+  function mergeDraftEdit(draft, edit) {
+    return {
+      ...draft,
+      ...edit,
+      id: draft.id,
+      qa: { ...draft.qa, ...edit.qa, generationId: draft.qa.generationId },
+    };
+  }
+
+  async function runRequirementGeneration(requirement, snapshot, mode, user, job, current, cloudSettings) {
+    const settings = structuredClone(store.settings);
+    const { signal } = generationControllers.get(job.id);
+    const useAgent = mode === 'agent' || (mode === 'ai' && settings.provider === 'reasonx');
+    const useAi = mode === 'ai' || useAgent;
+    const usableServers = () =>
+      can(user, 'useMcp') ? settings.mcpServers.filter((server) => settings.aiMcpServerIds?.includes(server.id)) : [];
+
+    const shouldInspect = (useAi && !useAgent) || requirement.inspectBeforeGeneration || cloudSettings;
+    const inspection = shouldInspect
+      ? await requirementInspector(snapshot, requirement.url, { signal })
+      : { pages: [], warnings: [], context: { pages: [] } };
+    current();
+    job.stage = 'drafting';
+
+    if (cloudSettings) {
+      const options = { fetcher: aiFetcher, connections, servers: usableServers(), signal };
+      return { inspection, draft: await generateCloudRequirementDraft(cloudSettings, requirement, inspection, options) };
+    }
+    if (mode === 'qwen') {
+      return { inspection, draft: await generateQwenRequirementDraft(requirement, inspection, aiFetcher, { signal }) };
+    }
+    if (useAgent) {
+      const draft = await runRequirementAgent({
+        settings,
+        requirement,
+        inspection,
+        fetcher: aiFetcher,
+        connections,
+        servers: usableServers(),
+        signal,
+        onStage: ({ stage, detail }) => {
+          job.stage = stage;
+          job.detail = detail;
+        },
+      });
+      return { inspection, draft };
+    }
+    if (useAi) {
+      return { inspection, draft: await generateRequirementDraft(settings, requirement, inspection, aiFetcher, { signal }) };
+    }
+    const metadata = metadataFromInspection(inspection, requirement.pageMetadata || {});
+    const output = generateTestCases({
+      requirement: requirement.description,
+      moduleName: requirement.moduleName || requirement.title.slice(0, 120),
+      pageMetadata: metadata.pageMetadata,
+      ...(requirement.categories ? { categories: requirement.categories } : {}),
+    });
+    return {
+      inspection,
+      draft: {
+        cases: generatedCasesToQa(output),
+        summary: output.summary,
+        warnings: [...(requirement.metadataWarnings || []), ...output.warnings, ...metadata.warnings],
+      },
+    };
+  }
+
+  async function generateRequirementCases(res, context) {
+    const { previous, old, requirements, projectId, requirementId, user, current, commit } = context;
+    check(old.description.trim(), 'Describe the workflow and expected outcomes before generating test cases.');
+    const mode = old.generationMode;
+    const cloudEngine = mode === 'claude' || mode === 'chatgpt' ? mode : null;
+    const cloudSettings = cloudEngine ? engineSettings(store.settings, store.userAi[user.id], cloudEngine) : null;
+    const useAgent = mode === 'agent' || (mode === 'ai' && store.settings.provider === 'reasonx');
+    if (useAgent) requireAgentModel(store.settings);
+    else if (mode === 'ai') requireGenerationModel(store.settings);
+    if (authoring.has(projectId)) {
+      await json(
+        res,
+        {
+          error: 'Generation is already running for this project. Please wait.',
+          userMessage: 'Test cases are already being generated for this project. Wait for that to finish, then try again.',
+        },
+        409,
+      );
+      return;
+    }
+    const job = startGeneration({
+      projectId,
+      kind: 'requirements',
+      requirementId,
+      model: cloudSettings?.model || store.settings.model,
+      ...(cloudEngine ? { engine: cloudEngine } : { reasonxMode: store.settings.reasonxMode }),
+    });
+    try {
+      await persist();
+      const snapshot = structuredClone(previous);
+      const requirement = { ...structuredClone(old), ...requirementFields(old) };
+      const { inspection, draft } = await runRequirementGeneration(
+        requirement,
+        snapshot,
+        mode,
+        user,
+        job,
+        current,
+        cloudSettings,
+      );
+      current();
+
+      const linked = new Set(requirement.testIds || []);
+      const pending = requirement.draftCases || [];
+      const existing = [...snapshot.tests.filter((test) => linked.has(test.id)), ...pending];
+      const existingNames = new Set(
+        existing.filter((test) => !test.qa?.generationId).map((test) => test.name.trim().toLowerCase()),
+      );
+      const generatedIds = new Set(existing.map((test) => test.qa?.generationId).filter(Boolean));
+      const added = draft.cases
+        .map(identifyRequirementCase)
+        .filter((test) => !generatedIds.has(test.qa.generationId) && !existingNames.has(test.name.trim().toLowerCase()));
+      check(
+        pending.length + added.length <= MAX_REQUIREMENT_DRAFTS,
+        'A requirement can hold up to 1,000 drafts. Approve or remove drafts before generating more.',
+      );
+      checkpoint(generationControllers.get(job.id).signal);
+
+      requirement.draftCases = [...pending, ...added];
+      requirement.generation = {
+        at: new Date().toISOString(),
+        fingerprint: requirementFingerprint(requirement),
+        summary: draft.summary,
+        ...(draft.trace ? { agent: draft.trace } : {}),
+        ...(draft.coverage ? { coverage: draft.coverage } : {}),
+        warnings: [...new Set([...inspection.warnings, ...draft.warnings])].slice(0, MAX_GENERATION_WARNINGS),
+        pages: inspection.pages.map((page) => ({
+          url: page.url,
+          title: page.title,
+          status: page.status,
+          controlCount: page.controls.length,
+          links: inspectedNavigationLinks(page),
+        })),
+      };
+      const saved = await commit({
+        ...snapshot,
+        requirements: requirements.map((item) => (item.id === requirementId ? requirement : item)),
+      });
+      Object.assign(job, { status: 'completed', finishedAt: new Date().toISOString() });
+      await persist();
+      await json(
+        res,
+        {
+          project: projectForViewer(saved),
+          requirement: saved.requirements.find((item) => item.id === requirementId),
+          addedCount: added.length,
+          pendingCount: requirement.draftCases.length,
+          existingCount: draft.cases.length - added.length,
+        },
+        201,
+      );
+    } catch (error) {
+      if (job.status === 'running') await failGeneration(job, error);
+      throw error;
+    } finally {
+      authoring.delete(projectId);
+      generationControllers.delete(job.id);
+    }
+  }
+
+  async function approveRequirementDrafts(res, input, context) {
+    const { previous, old, requirements, requirementId, commit } = context;
+    const selected = input.draftIds;
+    const pending = old.draftCases || [];
+    const approvedIds = new Set(old.testIds || []);
+    const requireApproval = (condition, message) => {
+      if (!condition) throw Object.assign(new Error(message), { userMessage: message });
+    };
+    requireApproval(isValidIdSelection(selected), 'Choose at least one draft to approve, then try again.');
+    requireApproval(
+      selected.every((id) => pending.some((item) => item.id === id) || approvedIds.has(id)),
+      'Some selected drafts are no longer available. Refresh the Requirement page and try again.',
+    );
+    const edits = input.editedDrafts === undefined ? [] : input.editedDrafts;
+    const isValidEdit = (item) =>
+      item &&
+      typeof item === 'object' &&
+      !Array.isArray(item) &&
+      selected.includes(item.id) &&
+      pending.some((draft) => draft.id === item.id) &&
+      (item.qa === undefined || (item.qa && typeof item.qa === 'object' && !Array.isArray(item.qa)));
+    requireApproval(
+      Array.isArray(edits) &&
+        edits.length <= selected.length &&
+        edits.every(isValidEdit) &&
+        new Set(edits.map((item) => item.id)).size === edits.length,
+      'The reviewed changes could not be matched to the selected drafts. Refresh the Requirement page and review the cases again.',
+    );
+    const merged = edits.map((item) => mergeDraftEdit(pending.find((draft) => draft.id === item.id), item));
+    const reviewed = new Map(normalizeRequirementDrafts(merged, pending).map((item) => [item.id, item]));
+    const added = pending.filter((item) => selected.includes(item.id)).map((item) => reviewed.get(item.id) || item);
+    requireApproval(
+      previous.tests.length + added.length <= MAX_PROJECT_TESTS,
+      'This project has reached its limit of 1,000 test cases. Create another project before approving more drafts.',
+    );
+    if (!added.length) {
+      await json(res, { project: projectForViewer(previous), requirement: old, approvedCount: 0 });
+      return;
+    }
+    const hasId = (items, id) => items.some((item) => item.id === id);
+    const accepted = added.map((item) => ({
+      ...item,
+      inTestPlan: false,
+      folderId: hasId(previous.folders, item.folderId) ? item.folderId : null,
+      suiteId: hasId(previous.suites, item.suiteId) ? item.suiteId : null,
+      prerequisiteId: hasId(previous.prerequisites, item.prerequisiteId) ? item.prerequisiteId : null,
+    }));
+    const updated = {
+      ...old,
+      draftCases: pending.filter((item) => !selected.includes(item.id)),
+      testIds: [...approvedIds, ...added.map((item) => item.id)],
+    };
+    const saved = await commit({
+      ...previous,
+      tests: [...previous.tests, ...accepted],
+      requirements: requirements.map((item) => (item.id === requirementId ? updated : item)),
+    });
+    await json(res, {
+      project: projectForViewer(saved),
+      requirement: saved.requirements.find((item) => item.id === requirementId),
+      approvedCount: added.length,
+    });
+  }
+
+  async function changeRequirementDrafts(req, res, input, context, draftId) {
+    const { previous, old, requirements, requirementId, commit } = context;
+    const pending = old.draftCases || [];
+    const scope = requestScope.getStore();
+    const saveDrafts = (draftCases) =>
+      commit({
+        ...previous,
+        requirements: requirements.map((item) => (item.id === requirementId ? { ...old, draftCases } : item)),
+      });
+    const respond = (saved, extra = {}) =>
+      json(res, {
+        project: projectForViewer(saved),
+        requirement: saved.requirements.find((item) => item.id === requirementId),
+        ...extra,
+      });
+
+    if (!draftId) {
+      const selected = input.draftIds;
+      if (!isValidIdSelection(selected)) {
+        const message = 'Choose at least one draft to delete, then try again.';
+        await json(res, { error: 'Choose at least one draft to delete.', userMessage: message }, 400);
+        return;
+      }
+      if (!selected.every((id) => pending.some((item) => item.id === id))) {
+        const userMessage = 'Some selected drafts are no longer available. Refresh the Requirement page and try again.';
+        await json(res, { error: 'Draft not found.', userMessage }, 404);
+        return;
+      }
+      scope.action = 'Requirement drafts deleted';
+      const saved = await saveDrafts(pending.filter((item) => !selected.includes(item.id)));
+      await respond(saved, { deletedCount: selected.length });
+      return;
+    }
+
+    const draft = pending.find((item) => item.id === draftId);
+    if (!draft) {
+      const userMessage = 'This draft is no longer available. Refresh the Requirement page and choose a draft again.';
+      await json(res, { error: 'Draft not found.', userMessage }, 404);
+      return;
+    }
+    if (req.method === 'DELETE') {
+      scope.action = 'Requirement draft deleted';
+      await respond(await saveDrafts(pending.filter((item) => item.id !== draftId)));
+      return;
+    }
+    const [edited] = normalizeRequirementDrafts([mergeDraftEdit(draft, input)], [draft]);
+    await respond(await saveDrafts(pending.map((item) => (item.id === draftId ? edited : item))));
+  }
+
+  async function requirementRoutes(req, res, route, url, user) {
+    const match = route.match(REQUIREMENT_ROUTE);
+    if (!match) return false;
+    const [, projectId, requirementId, operation, itemId, stepOperation] = match;
+    const previous = findProject(projectId);
+    const requirements = previous.requirements || [];
+    const old = requirements.find((item) => item.id === requirementId);
+    if (requirementId && !old) {
+      const userMessage = 'This requirement is no longer available. Return to the Requirement list and select another requirement.';
+      await json(res, { error: 'Requirement not found.', userMessage }, 404);
+      return true;
+    }
+    if (req.method === 'GET' && !operation) {
+      await json(res, old || { requirements });
+      return true;
+    }
+    if (!isSupportedRequirementRequest(req.method, requirementId, operation, itemId, stepOperation)) {
+      await json(res, { error: 'Unsupported requirement operation.' }, 405);
+      return true;
+    }
+
+    const input = await readBody(req);
+    const current = () => {
+      if (!can(auth.find(user.id), 'qa')) throw httpError('QA Studio access is required.', 403);
+      const project = findProject(projectId);
+      if (project.revision !== input.revision) {
+        throw httpError('This project changed. Reload the requirement and try again. Your existing cases have been kept.', 409, {
+          code: 'EDIT_CONFLICT',
+        });
+      }
+      return project;
+    };
+    current();
+
+    if (operation === 'cases') {
+      const testCase =
+        (old.draftCases || []).find((item) => item.id === itemId) ||
+        ((old.testIds || []).includes(itemId) && previous.tests.find((item) => item.id === itemId));
+      if (!testCase) {
+        const userMessage = 'This case is no longer available in the requirement. Refresh the page and select it again.';
+        await json(res, { error: 'Requirement case not found.', userMessage }, 404);
+        return true;
+      }
+      const workflow = input.workflow ?? testCase.qa?.workflowDetails ?? '';
+      const output = generateRequirementTestSteps({ ...old, ...requirementFields(old) }, testCase, workflow);
+      current();
+      requestScope.getStore().action = 'Test steps generated for review';
+      await json(res, { ...output, revision: previous.revision });
+      return true;
+    }
+
+    const commit = async (raw) => {
+      await backup();
+      current();
+      const counter = { nextTestNumber: store.nextTestNumber };
+      const next = normalizeProject(raw, previous, counter);
+      store.projects[store.projects.indexOf(previous)] = next;
+      store.nextTestNumber = counter.nextTestNumber;
+      await persist();
+      return next;
+    };
+    const context = { previous, old, requirements, projectId, requirementId, user, current, commit };
+
+    if (operation === 'drafts') {
+      await changeRequirementDrafts(req, res, input, context, itemId);
+      return true;
+    }
+    if (operation === 'approve') {
+      await approveRequirementDrafts(res, input, context);
+      return true;
+    }
+    if (operation === 'generate') {
+      await generateRequirementCases(res, context);
+      return true;
+    }
+
+    let requirement = null;
+    let nextRequirements = requirements.filter((item) => item.id !== requirementId);
+    if (req.method !== 'DELETE') {
+      const base = old || { id: randomUUID(), testIds: [] };
+      requirement = { ...base, ...requirementFields({ ...old, ...input }) };
+      nextRequirements = old
+        ? requirements.map((item) => (item.id === requirementId ? requirement : item))
+        : [...requirements, requirement];
+    }
+    const saved = await commit({ ...previous, requirements: nextRequirements });
+    await json(
+      res,
+      {
+        project: projectForViewer(saved),
+        requirement: requirement ? saved.requirements.find((item) => item.id === requirement.id) : null,
+      },
+      old ? 200 : 201,
+    );
+    return true;
+  }
+
   async function writeRecordingFile(snapshot) {
     const file = path.join(dataDir, 'recording.json');
     await writeFile(`${file}.tmp`, JSON.stringify(vault.encode(snapshot)));
@@ -2072,6 +2492,7 @@ async function createUnlockedStudio({
     workspaceRoutes,
     dataRoutes,
     runRoutes,
+    requirementRoutes,
     settingsRoutes,
     mcpRoutes,
     aiRoutes,

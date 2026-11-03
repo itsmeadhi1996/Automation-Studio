@@ -99,7 +99,7 @@ test('requirement UI saves an older project, generates, shows required columns a
   await page.getByRole('button',{name:'Save requirement',exact:true}).click();await page.waitForFunction(()=>document.querySelector('#requirement-feedback')?.textContent==='Requirement saved.');
   await page.reload();await page.getByLabel('Description',{exact:true}).waitFor();assert.equal(await page.getByLabel('Description',{exact:true}).inputValue(),'Unsaved workflow text');assert.deepEqual(errors,[]);
 });
-for(const provider of ['google','groq','reasonx'])test(`${provider} uses the configured adapter for structured requirement cases`,async()=>{
+for(const provider of ['google','groq'])test(`${provider} uses the configured adapter for structured requirement cases`,async()=>{
   let request;
   const result=await generateRequirementDraft({provider,model:'test-model',apiKey:'key',apiKeys:{[provider]:'key'}},fields,inspection,async(url,options)=>{request={url,body:JSON.parse(options.body)};return {ok:true,json:async()=>provider==='google'?{status:'completed',output_text:JSON.stringify(draft)}:{choices:[{finish_reason:'stop',message:{content:JSON.stringify(draft)}}]}};});
   assert.equal(result.cases.length,2);assert.match(JSON.stringify(request.body),/Active customers/);assert.ok(request.url.startsWith(provider==='reasonx'?'http://127.0.0.1:8080/v1/':'https://'));
