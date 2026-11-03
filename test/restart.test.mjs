@@ -6,7 +6,7 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { sourceVersion } from '../runtime-version.mjs';
-import { restartStudio, resolveStudioStorage } from '../studio-restart.mjs';
+import { restartStudio, resolveStudioStorage, studioStopper } from '../studio-restart.mjs';
 import { createStudio } from './support.mjs';
 
 const exec = promisify(execFile);
@@ -174,6 +174,73 @@ test('restart rejects unfinished recordings and debug sessions at both activity 
       assert.equal(checks,stage);assert.equal(backups,stage===1?0:1);assert.equal(unlocked,stage===2);
     });
   }
+});
+
+test('F10: restart refuses while a generation is running, at both activity checks',async t=>{
+  const directory=path.resolve('.test-output','restart-generation-'+Date.now());
+  await mkdir(directory,{recursive:true});await writeFile(path.join(directory,'studio.lock'),JSON.stringify({pid:424242}));
+  for(const stage of [1,2])await t.test('check '+stage,async()=>{
+    let checks=0,stopped=false;
+    await assert.rejects(restartStudio({
+      url:'http://127.0.0.1:1',directory,headers:{},
+      request:async url=>url.endsWith('/api/status')
+        ?json({...idle,activeGenerations:++checks===stage?[{id:'job',status:'running'}]:[]})
+        :json({name:'backup-test.json'}),
+      unlock:async()=>{},kill:()=>{stopped=true;},wait:async()=>{}
+    }),/generation/i);
+    assert.equal(stopped,false);assert.equal(checks,stage);
+  });
+});
+
+test('F10: the default stopper asks the server to shut down on Windows and never hard-kills a server that refuses',async t=>{
+  const url='http://127.0.0.1:1',headers={Cookie:'studio=administrator-session'};
+  const signals=[];
+  const killProcess=(pid,signal)=>{signals.push([pid,signal]);};
+  const stopper=(request,platform='win32')=>studioStopper({url,headers,request,platform,killProcess});
+  await t.test('graceful request',async()=>{
+    signals.length=0;
+    const calls=[];
+    await stopper(async(target,options)=>{calls.push({target,options});return json({stopping:true},202);})(424242,'SIGTERM');
+    assert.equal(calls[0].target,url+'/api/admin/shutdown');
+    assert.equal(calls[0].options.method,'POST');
+    assert.equal(calls[0].options.headers.Cookie,headers.Cookie);
+    assert.deepEqual(JSON.parse(calls[0].options.body),{pid:424242});
+    assert.deepEqual(signals,[]);
+  });
+  await t.test('liveness probe stays local',async()=>{
+    signals.length=0;
+    await stopper(async()=>{throw new Error('No request expected');})(424242,0);
+    assert.deepEqual(signals,[[424242,0]]);
+  });
+  await t.test('refusal and network failure leave the process running',async()=>{
+    signals.length=0;
+    await assert.rejects(stopper(async()=>json({error:'Studio is busy'},409))(424242,'SIGTERM'),/Studio is busy/);
+    await assert.rejects(stopper(async()=>{throw new Error('Connection refused');})(424242,'SIGTERM'),/was not stopped/);
+    assert.deepEqual(signals,[]);
+  });
+  await t.test('a server without the route falls back to the signal',async()=>{
+    signals.length=0;
+    await stopper(async()=>json({error:'Not found'},404))(424242,'SIGTERM');
+    assert.deepEqual(signals,[[424242,'SIGTERM']]);
+  });
+  await t.test('other platforms use the signal',async()=>{
+    signals.length=0;
+    await stopper(async()=>{throw new Error('No request expected');},'linux')(424242,'SIGTERM');
+    assert.deepEqual(signals,[[424242,'SIGTERM']]);
+  });
+});
+
+test('F11: the default vault check refuses a missing key and never creates one',async()=>{
+  const directory=path.resolve('.test-output','restart-missing-key-'+Date.now());
+  await mkdir(directory,{recursive:true});await writeFile(path.join(directory,'studio.lock'),JSON.stringify({pid:424242}));
+  let backups=0,stopped=false;
+  await assert.rejects(restartStudio({
+    url:'http://127.0.0.1:1',directory,headers:{},
+    request:async url=>{if(url.endsWith('/api/backups'))backups++;return json(idle);},
+    kill:()=>{stopped=true;},wait:async()=>{}
+  }),/credentials\.key is missing/);
+  assert.equal(backups,0);assert.equal(stopped,false);
+  assert.deepEqual(await readdir(directory),['studio.lock']);
 });
 
 test('restart preserves the process and skips backup when a stopped recording cannot be flushed safely',async t=>{

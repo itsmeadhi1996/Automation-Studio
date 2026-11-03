@@ -6,7 +6,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { launchBrowser } from './browsers.mjs';
+import {
+  createJiraIssue,
+  issueDraft,
+  normalizeBugTracker,
+  publicBugTracker,
+  verifyBugTracker,
+} from './bug-tracker.mjs';
 import { queryDatabase } from './database.mjs';
+import { OpenVpnConnect } from './vpn.mjs';
 import { parseCsv } from './datasets.mjs';
 import { executionCsv, queryExecutionOverview } from './execution-overview.mjs';
 import { queryRunHistory } from './history-query.mjs';
@@ -302,6 +310,9 @@ async function createUnlockedStudio({
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
   recordingLauncher = startRecording,
   aiFetcher = fetch,
+  bugTrackerFetcher = fetch,
+  onShutdown = null,
+  vpn = new OpenVpnConnect(),
   requirementInspector = inspectRequirementApp,
   reasonxRuntime = createReasonxRuntime({
     home: process.env.REASONX_HOME || path.resolve(appRoot, '../../../For Ai/aiResoningAgent'),
@@ -381,6 +392,7 @@ async function createUnlockedStudio({
   store.schedules ||= [];
   store.agentDrafts ||= [];
   store.userAi ||= {};
+  store.issueReports ||= [];
 
   const loadedSettings = store.settings || {};
   store.settings = normalizeIntegrationSettings(loadedSettings, loadedSettings);
@@ -733,6 +745,29 @@ async function createUnlockedStudio({
     return false;
   }
 
+  // On Windows, SIGTERM ends the process without running close(), so the restart
+  // helper asks here first. The pid check stops a request reaching the wrong server.
+  async function shutdownRoute(req, res, route) {
+    if (route !== '/api/admin/shutdown' || req.method !== 'POST') return false;
+    if (!onShutdown) {
+      await json(res, { error: 'Not found' }, 404);
+      return true;
+    }
+    const input = await readBody(req);
+    if (input.pid !== process.pid) {
+      await json(res, { error: 'This request is for a different Studio process.' }, 409);
+      return true;
+    }
+    const isBusy = activeRun || debugSessions.size || startingBrowser || recording || authoring.size;
+    if (isBusy) {
+      await json(res, { error: 'Finish active work before stopping Studio.' }, 409);
+      return true;
+    }
+    res.once('finish', () => setImmediate(onShutdown));
+    await json(res, { stopping: true }, 202);
+    return true;
+  }
+
   async function adminProjectRoutes(req, res, route, url) {
     if (route === '/api/admin/projects' && req.method === 'GET') {
       const projects = store.projects.map((project) => ({
@@ -851,6 +886,8 @@ async function createUnlockedStudio({
               .filter((draft) => hasProject(user, draft.projectId))
               .map(({ inspection, ...draft }) => draft)
           : [],
+        bugTracker: publicBugTracker(store.bugTracker),
+        reportedIssues: store.issueReports.filter((issue) => isVisible(issue) && issue.status === 'created'),
         projects: isAutomation ? projects.map(automationProject) : projects.map((project) => projectForViewer(project)),
         runs: stateRuns().map((run) => runForViewer(run)),
         ...activityState(),
@@ -1086,6 +1123,10 @@ async function createUnlockedStudio({
 
   async function startRun(req, res, user) {
     const input = await readBody(req);
+    if (vpn.busy) {
+      await json(res, { error: 'Wait for the OpenVPN request to finish before running tests.' }, 409);
+      return;
+    }
     if (recordingLive() || startingBrowser) {
       await json(res, { error: 'Stop the active recording first.' }, 409);
       return;
@@ -1277,7 +1318,7 @@ async function createUnlockedStudio({
     if (req.method !== 'POST') return false;
     if (route === '/api/debug') {
       const input = await readBody(req);
-      const isBusy = recordingLive() || startingBrowser || activeRun || debugSessions.size;
+      const isBusy = vpn.busy || recordingLive() || startingBrowser || activeRun || debugSessions.size;
       check(!isBusy, 'Finish the active recording, run or debug session first.');
       const project = findAutomationProject(input.projectId);
       const test = project.tests.find((item) => item.id === input.testId);
@@ -1359,6 +1400,7 @@ async function createUnlockedStudio({
     ...publicSettings(store.settings),
     userAi: publicUserAi(store.userAi[viewer?.id]),
     ...(can(viewer, 'useMcp') ? {} : { mcpServers: [], aiMcpServerIds: [] }),
+    bugTracker: publicBugTracker(store.bugTracker),
     mcpCatalog: can(viewer, 'manageMcp') ? mcpCatalog() : [],
     studioMcp: {
       command: process.execPath,
@@ -2238,6 +2280,137 @@ async function createUnlockedStudio({
     return true;
   }
 
+  // ---- Jira and VPN --------------------------------------------------------------
+
+  function markBugTrackerDisconnected(revision) {
+    if (store.bugTracker?.revision !== revision) return;
+    store.bugTracker.connected = false;
+    store.bugTracker.verifiedAt = null;
+  }
+
+  async function reportIssue(res, input) {
+    const project = findProject(input.projectId);
+    check(project.tests.some((test) => test.id === input.testId), 'Test case not found.');
+    const validRequestId = typeof input.requestId === 'string' && /^[a-f0-9-]{36}$/i.test(input.requestId);
+    check(validRequestId, 'Issue request ID is required.');
+    const previous = store.issueReports.find((issue) => issue.requestId === input.requestId);
+    if (previous) {
+      const isSameCase = previous.projectId === input.projectId && previous.testId === input.testId;
+      check(isSameCase, 'Issue request belongs to a different test case.');
+      if (previous.status === 'created') {
+        await json(res, previous);
+        return;
+      }
+      if (previous.status !== 'rejected') {
+        const error = 'This issue request is pending or was not confirmed. Check Jira before submitting a new report.';
+        await json(res, { error }, 409);
+        return;
+      }
+    }
+    const draft = issueDraft(input);
+    const config = structuredClone(store.bugTracker);
+    check(config?.connected, 'Connect Jira successfully in Settings before reporting an issue.');
+    const entry = previous || { requestId: input.requestId, projectId: project.id, testId: input.testId };
+    Object.assign(entry, { status: 'pending', summary: draft.summary });
+    if (!previous) store.issueReports.push(entry);
+    await persist();
+    try {
+      const issue = await createJiraIssue(config, draft, bugTrackerFetcher);
+      Object.assign(entry, issue, { status: 'created' });
+      await persist();
+      await json(res, entry, 201);
+    } catch (error) {
+      // An uncertain outcome stays blocked, so a retry cannot create a duplicate issue.
+      if (entry.status !== 'created') entry.status = error.uncertain ? 'unknown' : 'rejected';
+      if (error.authFailed) markBugTrackerDisconnected(config.revision);
+      await persist();
+      throw error;
+    }
+  }
+
+  async function bugTrackerRoutes(req, res, route) {
+    if (route === '/api/bug-tracker' && req.method === 'GET') {
+      await json(res, publicBugTracker(store.bugTracker));
+      return true;
+    }
+    if (route === '/api/bug-tracker' && req.method === 'PUT') {
+      store.bugTracker = normalizeBugTracker(await readBody(req), store.bugTracker);
+      await persist();
+      await json(res, publicBugTracker(store.bugTracker));
+      return true;
+    }
+    if (route === '/api/bug-tracker' && req.method === 'DELETE') {
+      await readBody(req);
+      delete store.bugTracker;
+      await persist();
+      await json(res, publicBugTracker());
+      return true;
+    }
+    if (route === '/api/bug-tracker/connect' && req.method === 'POST') {
+      await readBody(req);
+      const config = structuredClone(store.bugTracker);
+      check(config, 'Save a Jira configuration first.');
+      try {
+        const verified = await verifyBugTracker(config, bugTrackerFetcher);
+        check(
+          store.bugTracker?.revision === config.revision,
+          'Configuration changed during verification. Test the connection again.',
+        );
+        store.bugTracker = verified;
+        await persist();
+        await json(res, publicBugTracker(verified));
+      } catch (error) {
+        if (store.bugTracker?.revision === config.revision) {
+          markBugTrackerDisconnected(config.revision);
+          await persist();
+        }
+        throw error;
+      }
+      return true;
+    }
+    if (route === '/api/issues' && req.method === 'POST') {
+      await reportIssue(res, await readBody(req));
+      return true;
+    }
+    return false;
+  }
+
+  const vpnStatus = async () => ({ ...(await vpn.status()), profileId: store.vpn?.profileId || null });
+
+  async function vpnRoutes(req, res, route) {
+    if (route === '/api/vpn' && req.method === 'GET') {
+      await json(res, await vpnStatus());
+      return true;
+    }
+    if (route === '/api/vpn/profiles' && req.method === 'POST') {
+      await readBody(req);
+      await json(res, { profiles: await vpn.profiles() });
+      return true;
+    }
+    if (route === '/api/vpn' && req.method === 'PUT') {
+      const input = await readBody(req);
+      check(input.profileId === null || typeof input.profileId === 'string', 'Select an OpenVPN profile');
+      if (input.profileId !== null) {
+        const profiles = await vpn.profiles();
+        const isKnown = profiles.some((profile) => profile.id === input.profileId);
+        check(isKnown, 'The selected OpenVPN profile was not found. Refresh profiles.');
+      }
+      store.vpn = { profileId: input.profileId };
+      await persist();
+      await json(res, await vpnStatus());
+      return true;
+    }
+    if ((route === '/api/vpn/connect' || route === '/api/vpn/disconnect') && req.method === 'POST') {
+      await readBody(req);
+      const isBusy = activeRun || debugSessions.size || startingBrowser || recordingLive();
+      check(!isBusy, 'Finish the active run, debug session, or recording before changing the VPN.');
+      await vpn.action(route.endsWith('/disconnect') ? 'disconnect' : 'connect', store.vpn?.profileId);
+      await json(res, await vpnStatus());
+      return true;
+    }
+    return false;
+  }
+
   async function writeRecordingFile(snapshot) {
     const file = path.join(dataDir, 'recording.json');
     await writeFile(`${file}.tmp`, JSON.stringify(vault.encode(snapshot)));
@@ -2269,7 +2442,7 @@ async function createUnlockedStudio({
     if (req.method !== 'POST') return false;
     if (route === '/api/recordings') {
       const input = await readBody(req);
-      const isBusy = recording || startingBrowser || activeRun || debugSessions.size;
+      const isBusy = vpn.busy || recording || startingBrowser || activeRun || debugSessions.size;
       check(!isBusy, 'Finish the active recording, run, or debug session first.');
       startingBrowser = true;
       try {
@@ -2349,7 +2522,8 @@ async function createUnlockedStudio({
   }
 
   async function tickSchedules() {
-    const isBusy = closing || schedulerWork || activeRun || recordingLive() || debugSessions.size || startingBrowser;
+    const isBusy =
+      closing || schedulerWork || activeRun || recordingLive() || debugSessions.size || startingBrowser || vpn.busy;
     if (isBusy) return;
     const schedule = store.schedules.find((item) => item.enabled && Date.parse(item.nextRunAt) <= Date.now());
     if (!schedule) return;
@@ -2485,6 +2659,7 @@ async function createUnlockedStudio({
   }
 
   const routeHandlers = [
+    shutdownRoute,
     adminProjectRoutes,
     adminUserRoutes,
     manualRunRoutes,
@@ -2493,6 +2668,8 @@ async function createUnlockedStudio({
     dataRoutes,
     runRoutes,
     requirementRoutes,
+    bugTrackerRoutes,
+    vpnRoutes,
     settingsRoutes,
     mcpRoutes,
     aiRoutes,
@@ -2667,13 +2844,19 @@ async function createUnlockedStudio({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const studio = await createStudio();
+  const FORCED_EXIT_MS = 8000;
+  let studio;
+  let isStopping = false;
+  const shutdown = async () => {
+    if (isStopping) return;
+    isStopping = true;
+    setTimeout(() => process.exit(1), FORCED_EXIT_MS).unref();
+    await studio.close();
+    process.exit(0);
+  };
+  studio = await createStudio({ onShutdown: shutdown });
   await studio.listen();
   console.log(`QA Studio: http://127.0.0.1:${studio.server.address().port}`);
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, async () => {
-      await studio.close();
-      process.exit(0);
-    });
-  }
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
