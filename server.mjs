@@ -383,7 +383,11 @@ async function createUnlockedStudio({
     if (!username || !password) {
       throw new Error('Set STUDIO_ADMIN_USERNAME and STUDIO_ADMIN_PASSWORD to create the first administrator.');
     }
-    await auth.setup({ username, password, name: process.env.STUDIO_ADMIN_NAME || 'Administrator' });
+    await auth
+      .setup({ username, password, name: process.env.STUDIO_ADMIN_NAME || 'Administrator' })
+      .catch((error) => {
+        throw new Error(`STUDIO_ADMIN_USERNAME or STUDIO_ADMIN_PASSWORD is not valid: ${error.message}`);
+      });
   }
   const sessionCookie = (token) => auth.cookie(token) + (publicSite?.protocol === 'https:' ? '; Secure' : '');
   const runtime ={ pid: process.pid, sourceVersion: await sourceVersion(appRoot) };
