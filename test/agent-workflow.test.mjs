@@ -71,6 +71,16 @@ test('automation uses existing repository objects, rejects unmapped selectors, a
   assert.equal(result.coverage[0].status,'uncovered');assert.equal(project.objects.length,1);
   await assert.rejects(automationWorkflow({settings,options:{...options,repairLimit:0},project,prompt:'Fill Name',inspection:{elements:[]},fetcher,generate:async()=>({...draft,steps:[{action:'fill',locatorType:'css',target:'#invented'}]}),validate:()=>{}}),/Unmapped element/);
 });
+test('automation review accepts a message check from the workflow but not invented text or actions on it',async()=>{
+  const project={globalVariables:{},environments:[],objects:[],locatorTemplates:[]};
+  const fetcher=async(_,init)=>reply(JSON.parse(init.body).messages[0].content.startsWith('Analyze')?{missingContext:[],testDataNeeds:[],plan:[]}:{issues:[]});
+  const run=(step,prompt='Sign in and verify the error message Invalid credentials is shown.',targetTest)=>automationWorkflow({settings,options:{...options,repairLimit:0},project,prompt,targetTest,inspection:{elements:[]},fetcher,generate:async()=>({name:'Rejected',explanation:'Proposed',steps:[{action:'navigate',value:'https://example.test'},step]}),validate:()=>{}});
+  const message={action:'text',locatorType:'text',target:'Invalid credentials',value:'Invalid credentials'};
+  assert.equal((await run(message)).steps[1].target,'Invalid credentials');
+  assert.equal((await run(message,'Verify the rejection',{qa:{manualSteps:[{id:'r1',instruction:'Sign in',expectedResult:'Invalid credentials is displayed'}]}})).steps[1].target,'Invalid credentials');
+  await assert.rejects(run({...message,target:'Account locked',value:'Account locked'}),/Unmapped element/);
+  await assert.rejects(run({action:'click',locatorType:'text',target:'Invalid credentials'}),/Unmapped element/);
+});
 test('automation review accepts resolved repository selectors and templates but flags unknown objects',async()=>{
   const project={globalVariables:{},environments:[],locatorTemplates:[{id:'field',locatorType:'css',selector:'[name="XXX"]'}],objects:[{id:'known',name:'Name',locatorType:'css',selector:'#name',xpath:''},{id:'email',name:'Email',locatorType:'css',templateId:'field',replacement:'email'}]};
   const fetcher=async(_,init)=>reply(JSON.parse(init.body).messages[0].content.startsWith('Analyze')?{missingContext:[],testDataNeeds:[],plan:[]}:{issues:[]});

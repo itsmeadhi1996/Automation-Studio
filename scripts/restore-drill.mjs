@@ -31,6 +31,6 @@ for (const file of requiredFiles) {
 
 console.log(`${backups.length - badBackups}/${backups.length} backups parse and contain a projects array.`);
 console.log(
-  'Note: a full recovery also needs users.json, credentials.key (same Windows account) and the artifacts folder. See docs/RECOVERY.md.',
+  'Note: a full recovery also needs users.json, credentials.key (same Windows account), the project-documents and local-test-files folders, and the artifacts folder. See docs/RECOVERY.md.',
 );
 process.exit(badBackups || missingFiles ? 1 : 0);

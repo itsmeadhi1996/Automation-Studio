@@ -1,6 +1,19 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomBytes, randomUUID } from 'node:crypto';
-import { copyFile, mkdir, open, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, open, readdir, readFile, rename, rm, stat, unlink, writeFile } from 'node:fs/promises';
+import {
+  DOCUMENT_SIZE_MESSAGE,
+  DOCUMENT_TYPE_MESSAGE,
+  MAX_DOCUMENT_BYTES,
+  MAX_PROJECT_DOCUMENTS,
+  canPreviewInline,
+  checkDocumentContent,
+  documentContext,
+  documentName,
+  documentType,
+  documentWarnings,
+  extractDocumentText,
+} from './project-documents.mjs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,10 +22,19 @@ import { launchBrowser } from './browsers.mjs';
 import {
   createJiraIssue,
   issueDraft,
+  jiraIssueOptions,
   normalizeBugTracker,
   publicBugTracker,
+  uploadJiraAttachment,
   verifyBugTracker,
 } from './bug-tracker.mjs';
+import {
+  attachmentName,
+  buildIssueDraft,
+  collectEvidence,
+  MAX_ATTACHMENT_BYTES,
+  REPORT_EVIDENCE_ID,
+} from './issue-report.mjs';
 import { queryDatabase } from './database.mjs';
 import { OpenVpnConnect } from './vpn.mjs';
 import { parseCsv } from './datasets.mjs';
@@ -34,6 +56,8 @@ import { reasonxModelList, reasonxModels } from './reasonx-client.mjs';
 import { createReasonxRuntime } from './reasonx-runtime.mjs';
 import { automationWorkflow } from './reasonx-workflows.mjs';
 import { aiEngines, engineSettings, normalizeUserAi, publicUserAi, verifyEngine } from './user-ai.mjs';
+import { monocartReportHtml } from './monocart-report.mjs';
+import { playwrightJsonReport } from './playwright-json.mjs';
 import { reportHtml } from './reports.mjs';
 import { executeRun, locator, preflight, startDebugSession } from './runner.mjs';
 import {
@@ -57,7 +81,7 @@ import {
   sampleProject,
 } from './model.mjs';
 import { createMetrics, eventLoopDelay, storageHealth } from './ops.mjs';
-import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans } from './public/run-history.js';
+import { caseRun, isIndividualCaseRun, matchesCase, recoverTestPlans, sortRunsNewestFirst } from './public/run-history.js';
 import { createManualRun, updateManualRun } from './qa-model.mjs';
 import { startRecording } from './recorder.mjs';
 import { requireAgentModel, runRequirementAgent } from './requirement-agent.mjs';
@@ -99,12 +123,14 @@ const MAX_REQUIREMENT_BATCH = 1000;
 const MAX_REQUIREMENT_DRAFTS = 1000;
 const MAX_PROJECT_TESTS = 1000;
 const MAX_GENERATION_WARNINGS = 30;
+const DOCUMENT_ROUTE = /^\/api\/projects\/([\w-]+)\/documents(?:\/([a-f0-9-]{36})(?:\/(content))?)?$/;
+const DOCUMENT_CONTEXT_LIMITS = { cloud: 40000, qwen: 12000, agent: 700 };
 const REQUIREMENT_ROUTE =
   /^\/api\/projects\/([\w-]+)\/requirements(?:\/([\w-]+))?(?:\/(generate|approve|drafts|cases)(?:\/([\w-]+)(?:\/(generate-steps))?)?)?$/;
 const MAX_AI_PROMPT = 12000;
 const MAX_AI_MCP_SERVERS = 10;
 const GENERATION_ATTEMPTS = 2;
-const CORRECTABLE_GENERATION_ERRORS = ['GENERATED_LOCATOR_NOT_OBSERVED', 'GENERATED_URL_INVALID'];
+const CORRECTABLE_GENERATION_ERRORS = ['GENERATED_LOCATOR_NOT_OBSERVED', 'GENERATED_LOCATOR_MISSING', 'GENERATED_URL_INVALID'];
 const MAX_SCHEDULES = 100;
 const MAX_INTERVAL_MINUTES = 525600;
 const SCHEDULE_TICK_MS = 1000;
@@ -115,6 +141,11 @@ const RETAIN_MAX = 10000;
 const TARGET_CHECK_TIMEOUT_MS = 10000;
 const ARTIFACT_NAME = /^[\w-]+\.(png|zip)$/;
 const REPORT_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
+// The interactive report needs scripts. Without allow-same-origin they run with no access to the
+// signed-in session or Studio data, and the policy gives them no network either.
+const INTERACTIVE_REPORT_CSP =
+  "sandbox allow-scripts allow-downloads; default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; worker-src blob:";
+const REPORT_HISTORY_RUNS = 30;
 
 const PAGE_CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; " +
@@ -138,6 +169,7 @@ const SAME_NAME_ASSETS = [
   'history-page.js',
   'execution-overview.js',
   'requirements.js',
+  'requirement-documents.js',
   'login.js',
   'auth.css',
   'theme.js',
@@ -159,6 +191,7 @@ const SAME_NAME_ASSETS = [
   'test-plan-page.js',
   'test-plan-page.css',
   'run-history.js',
+  'issue-report.js',
   'folders.js',
   'local-data.js',
   'locator-templates.js',
@@ -191,6 +224,7 @@ const WORK_LOG_ACTIONS = [
   [/^\/api\/admin\/projects\//, () => 'Project access updated'],
   [/^\/api\/projects$/, () => 'Project created'],
   [/^\/api\/projects\/.*\/tests$/, () => 'Test case created'],
+  [/^\/api\/projects\/[^/]+\/documents/, (route, method) => `Project document ${method === 'DELETE' ? 'deleted' : 'uploaded'}`],
   [/^\/api\/projects\//, () => 'Project updated'],
   [/^\/api\/manual-runs$/, () => 'Manual run created'],
   [/^\/api\/manual-runs\/.*\/steps$/, () => 'Manual results updated'],
@@ -205,11 +239,17 @@ const WORK_LOG_ACTIONS = [
   [/^\/api\/schedules/, (route, method) => `Schedule ${method === 'DELETE' ? 'removed' : 'created'}`],
   [/^\/api\/ai\/create$/, () => 'Automation generated'],
   [/^\/api\/issues$/, () => 'Issue reported'],
+  [/^\/api\/issues\/[^/]+\/attachments$/, () => 'Issue attachment added'],
 ];
 
 function workLogAction(route, method) {
   const match = WORK_LOG_ACTIONS.find(([pattern]) => pattern.test(route));
   return match?.[1](route, method);
+}
+
+// Fails with a plain-language issue for the generation error window.
+function checkIssue(condition, message, issue) {
+  if (!condition) throw Object.assign(new Error(message), { issues: [issue] });
 }
 
 function maskSensitiveSteps(steps = []) {
@@ -243,6 +283,7 @@ function redactProject(project) {
     jdbcProfiles: project.jdbcProfiles.map((profile) => ({ ...profile, password: '' })),
     tests: project.tests.map(redactCaseValues),
     prerequisites: project.prerequisites.map(redactCaseValues),
+    processes: (project.processes || []).map(redactCaseValues),
   };
 }
 
@@ -315,7 +356,7 @@ async function createUnlockedStudio({
   vpn = new OpenVpnConnect(),
   requirementInspector = inspectRequirementApp,
   reasonxRuntime = createReasonxRuntime({
-    home: process.env.REASONX_HOME || path.resolve(appRoot, '../../../For Ai/aiResoningAgent'),
+    home: process.env.REASONX_HOME || path.resolve(appRoot, '../../For Ai/aiResoningAgent'),
   }),
 } = {}) {
   const dataDir = path.join(storage, 'data');
@@ -393,6 +434,7 @@ async function createUnlockedStudio({
   store.agentDrafts ||= [];
   store.userAi ||= {};
   store.issueReports ||= [];
+  store.projectDocuments ||= {};
 
   const loadedSettings = store.settings || {};
   store.settings = normalizeIntegrationSettings(loadedSettings, loadedSettings);
@@ -1143,7 +1185,12 @@ async function createUnlockedStudio({
     const readiness = preflight(project, input);
     check(readiness.ok, readiness.errors.join('\n'));
     const run = prepareRun(project, input);
-    run.mode = 'automation';
+    run.mode = input.processId ? 'process' : 'automation';
+    if (input.processId) {
+      const flow = project.processes.find((item) => item.id === input.processId);
+      run.name = `${flow.name} × ${run.tests.length}`;
+    }
+    run.environmentName = project.environments?.find((item) => item.id === project.activeEnvironmentId)?.name;
     if (input.name) {
       check(typeof input.name === 'string' && input.name.length <= MAX_RUN_NAME, 'Run name must be at most 120 characters');
       run.name = input.name;
@@ -1182,12 +1229,45 @@ async function createUnlockedStudio({
     }
   }
 
-  async function sendRunReport(res, run, testId, wantsPdf) {
+  // Earlier finished runs of the same project, or of the same case for a case report, oldest first.
+  function reportHistory(run, testId) {
+    const started = Date.parse(run.startedAt);
+    const earlier = store.runs.filter(
+      (candidate) =>
+        candidate.projectId === run.projectId &&
+        candidate.id !== run.id &&
+        candidate.status !== 'running' &&
+        !candidate.replay &&
+        Date.parse(candidate.startedAt) < started,
+    );
+    return sortRunsNewestFirst(earlier)
+      .map((candidate) => (testId ? caseRun(candidate, testId) : candidate))
+      .filter(Boolean)
+      .slice(0, REPORT_HISTORY_RUNS)
+      .reverse();
+  }
+
+  async function sendRunReport(res, run, testId, reportPath) {
     const reportRun = testId ? caseRun(run, testId) : run;
     if (!reportRun) {
       await json(res, { error: 'This test case is not part of the run' }, 404);
       return;
     }
+    if (reportPath === '/report.json') {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Disposition': `attachment; filename="run-${run.id}.json"`,
+      });
+      res.end(JSON.stringify(playwrightJsonReport(reportRun), null, 2));
+      return;
+    }
+    if (reportPath === '/report/interactive') {
+      const interactive = await monocartReportHtml(reportRun, artifactsDir, { history: reportHistory(run, testId) });
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': INTERACTIVE_REPORT_CSP });
+      res.end(interactive);
+      return;
+    }
+    const wantsPdf = reportPath === '/report.pdf';
     const html = await reportHtml(reportRun, artifactsDir);
     if (!wantsPdf) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Security-Policy': REPORT_CSP });
@@ -1288,7 +1368,7 @@ async function createUnlockedStudio({
       await json(res, await inspectPage(structuredClone(findProject(input.projectId)), input.url));
       return true;
     }
-    const runRoute = route.match(/^\/api\/runs\/([\w-]+)(\/report(?:\.pdf)?)?$/);
+    const runRoute = route.match(/^\/api\/runs\/([\w-]+)(\/report(?:\.pdf|\.json|\/interactive)?)?$/);
     if (!runRoute) return false;
     const run = findRun(runRoute[1]);
     const reportPath = runRoute[2];
@@ -1308,7 +1388,7 @@ async function createUnlockedStudio({
       return true;
     }
     if (req.method === 'GET' && reportPath) {
-      await sendRunReport(res, runForViewer(run), url.searchParams.get('testId'), reportPath === '/report.pdf');
+      await sendRunReport(res, runForViewer(run), url.searchParams.get('testId'), reportPath);
       return true;
     }
     return false;
@@ -1512,6 +1592,7 @@ async function createUnlockedStudio({
       status: error.code === 'GENERATION_CANCELLED' ? 'cancelled' : 'failed',
       finishedAt: new Date().toISOString(),
       error: error.message || 'Generation failed. Try again.',
+      issues: error.issues,
     });
     await persist();
   }
@@ -1551,6 +1632,13 @@ async function createUnlockedStudio({
         'full workflow and exact variable names.'
       );
     }
+    if (error.code === 'GENERATED_LOCATOR_MISSING') {
+      return (
+        `${error.message} Give that step a target. Use an observed control ID when the control is supplied. For a ` +
+        'message that appears only after an action, set locatorType to text and target to the exact message from ' +
+        'the workflow. Preserve the full workflow and exact variable names.'
+      );
+    }
     return (
       `${error.message} Correct ALL initial-page locators using the supplied observed controls. Copy locatorType, ` +
       'target and framePath exactly (or use observed control IDs when available). A visible caption does not imply ' +
@@ -1584,6 +1672,21 @@ async function createUnlockedStudio({
     });
     const { signal } = generationControllers.get(job.id);
     const { prompt } = input;
+    // Regenerating from a midway step keeps the earlier steps unchanged. The model sees them with
+    // sensitive values masked and returns only the steps that follow.
+    const keptSteps = input.regenerateFrom ? targetTest.steps.slice(0, input.regenerateFrom) : [];
+    const withKeptSteps = (value) => {
+      if (!keptSteps.length) return value;
+      checkIssue(value.steps.length, `The model returned no steps after step ${keptSteps.length}. Generate again.`, {
+        step: keptSteps.length + 1,
+        problem: `The AI returned no new steps after step ${keptSteps.length}.`,
+        expected: `New steps from step ${keptSteps.length + 1} onward to finish the workflow.`,
+        found: 'No new steps.',
+        fix: 'Describe what should happen after the kept steps, then generate again.',
+      });
+      return { ...value, steps: [...structuredClone(keptSteps), ...value.steps] };
+    };
+    const draftOptions = keptSteps.length ? { keptSteps: maskSensitiveSteps(keptSteps) } : {};
     try {
       await persist();
       const explicitUrl = prompt.match(/https?:\/\/[^\s<>"']+/i)?.[0]?.replace(/[.,;:!?)\]}'"*`]+$/, '');
@@ -1615,16 +1718,19 @@ async function createUnlockedStudio({
             job.stage = stage;
             job.detail = detail;
           },
-          generate: (feedback) =>
-            draftTest(agentSettings, project, prompt, aiFetcher, {
-              connections,
-              servers,
-              inspection,
-              targetTest,
-              validationFeedback: feedback,
-              signal,
-              agentOptions: options,
-            }),
+          generate: async (feedback) =>
+            withKeptSteps(
+              await draftTest(agentSettings, project, prompt, aiFetcher, {
+                connections,
+                servers,
+                inspection,
+                targetTest,
+                validationFeedback: feedback,
+                signal,
+                agentOptions: options,
+                ...draftOptions,
+              }),
+            ),
           validate: (value) => {
             warnings = validateGeneratedTest(project, value, inspection);
           },
@@ -1632,14 +1738,17 @@ async function createUnlockedStudio({
       } else {
         for (let attempt = 0; attempt < GENERATION_ATTEMPTS; attempt += 1) {
           job.stage = attempt ? 'correcting' : 'drafting';
-          draft = await draftTest(settings, project, prompt, aiFetcher, {
-            connections,
-            servers,
-            inspection,
-            targetTest,
-            validationFeedback,
-            signal,
-          });
+          draft = withKeptSteps(
+            await draftTest(settings, project, prompt, aiFetcher, {
+              connections,
+              servers,
+              inspection,
+              targetTest,
+              validationFeedback,
+              signal,
+              ...draftOptions,
+            }),
+          );
           job.stage = 'validation';
           // Check again after each model call, including automatic corrections.
           check(
@@ -1662,7 +1771,13 @@ async function createUnlockedStudio({
       if (targetTest) {
         for (const step of draft.steps) {
           const isKnown = !step.qaRequirementId || targetTest.qa.manualSteps.some((item) => item.id === step.qaRequirementId);
-          check(isKnown, 'Generated step references an unknown QA requirement. Generate again.');
+          checkIssue(isKnown, 'Generated step references an unknown QA requirement. Generate again.', {
+            step: draft.steps.indexOf(step) + 1,
+            problem: 'The step is linked to a QA requirement that this test case does not have.',
+            expected: `One of this case's ${targetTest.qa.manualSteps.length} QA requirements, or no link.`,
+            found: `An unknown requirement ID “${String(step.qaRequirementId).slice(0, 80)}”.`,
+            fix: 'Generate again.',
+          });
         }
       }
       const environment = project.environments.find((item) => item.id === project.activeEnvironmentId);
@@ -1670,9 +1785,16 @@ async function createUnlockedStudio({
         globals: project.globalVariables,
         environment: environment?.variables || {},
       });
-      check(
+      checkIssue(
         new URL(firstUrl).href === inspectionUrl(project, explicitUrl),
         'The generated test navigates to a different URL than the inspected page. Specify the starting URL and generate again.',
+        {
+          step: 1,
+          problem: 'The test opens a different page from the one Studio inspected.',
+          expected: `Step 1 opens ${inspectionUrl(project, explicitUrl)}.`,
+          found: draft.steps[0].valueMode === 'static' ? `Step 1 opens ${firstUrl}.` : `Step 1 opens the address in ${draft.steps[0].value}.`,
+          fix: 'Put the starting URL at the beginning of your description, then generate again.',
+        },
       );
       checkpoint(signal);
       check(
@@ -1771,6 +1893,7 @@ async function createUnlockedStudio({
           explanation: preview.draft.explanation,
           warnings: preview.warnings,
           error: undefined,
+          issues: undefined,
         });
       }
       await persist();
@@ -1803,6 +1926,13 @@ async function createUnlockedStudio({
     const targetTest = input.testId ? project.tests.find((test) => test.id === input.testId) : null;
     check(!input.testId || targetTest, 'Test case not found');
     if (targetTest) check(targetTest.qa?.manualSteps?.length, 'Add QA requirements before using Auto generator.');
+    const { regenerateFrom = 0 } = input;
+    check(
+      Number.isInteger(regenerateFrom) &&
+        regenerateFrom >= 0 &&
+        (!regenerateFrom || (targetTest && regenerateFrom < targetTest.steps.length)),
+      'Select a step of this test case to regenerate from.',
+    );
     // Claude and ChatGPT use the signed-in user's own key; "studio" uses shared Model settings.
     const engine = input.engine ?? store.userAi[user.id]?.engines?.automation ?? 'studio';
     check(aiEngines.includes(engine), 'Choose Studio, Claude or ChatGPT for test generation');
@@ -2001,8 +2131,13 @@ async function createUnlockedStudio({
       await persist();
       const snapshot = structuredClone(previous);
       const requirement = { ...structuredClone(old), ...requirementFields(old) };
+      const usesAi = cloudSettings || useAgent || mode === 'ai' || mode === 'qwen';
+      const documents = usesAi
+        ? documentContext(await readDocumentTexts(projectId), DOCUMENT_CONTEXT_LIMITS[useAgent ? 'agent' : mode === 'qwen' ? 'qwen' : 'cloud'])
+        : { documents: [], clipped: [] };
+      // A separate copy, because `requirement` is what gets saved and document text stays out of the project.
       const { inspection, draft } = await runRequirementGeneration(
-        requirement,
+        { ...requirement, projectDocuments: documents.documents },
         snapshot,
         mode,
         user,
@@ -2035,7 +2170,7 @@ async function createUnlockedStudio({
         summary: draft.summary,
         ...(draft.trace ? { agent: draft.trace } : {}),
         ...(draft.coverage ? { coverage: draft.coverage } : {}),
-        warnings: [...new Set([...inspection.warnings, ...draft.warnings])].slice(0, MAX_GENERATION_WARNINGS),
+        warnings: [...new Set([...documentWarnings(documents), ...inspection.warnings, ...draft.warnings])].slice(0, MAX_GENERATION_WARNINGS),
         pages: inspection.pages.map((page) => ({
           url: page.url,
           title: page.title,
@@ -2183,6 +2318,123 @@ async function createUnlockedStudio({
     await respond(await saveDrafts(pending.map((item) => (item.id === draftId ? edited : item))));
   }
 
+  // ---- Project documents ------------------------------------------------------
+
+  const documentsDir = path.join(dataDir, 'project-documents');
+  const documentPath = (id, part) => path.join(documentsDir, `${id}.${part}.json`);
+
+  async function readDocumentPart(id, part, key) {
+    return vault.decode(JSON.parse(await readFile(documentPath(id, part), 'utf8')))[key];
+  }
+
+  async function readDocumentTexts(projectId) {
+    const saved = (store.projectDocuments[projectId] || []).filter((item) => item.readable);
+    return Promise.all(
+      saved.map(async (item) => ({
+        name: item.name,
+        // A document deleted while generation starts is simply left out.
+        text: await readDocumentPart(item.id, 'text', 'documentText').catch(() => ''),
+      })),
+    );
+  }
+
+  async function readDocumentUpload(req) {
+    let name = null;
+    try {
+      name = documentName(decodeURIComponent(req.headers['x-file-name'] || ''));
+    } catch {
+      // A malformed name is rejected below, like any other invalid file name.
+    }
+    check(name, DOCUMENT_TYPE_MESSAGE);
+    let received = 0;
+    const chunks = [];
+    for await (const chunk of req) {
+      received += chunk.length;
+      if (received > MAX_DOCUMENT_BYTES) throw httpError(DOCUMENT_SIZE_MESSAGE, 413);
+      chunks.push(chunk);
+    }
+    const data = Buffer.concat(chunks);
+    const problem = checkDocumentContent(name, data);
+    check(!problem, problem);
+    return { name, data };
+  }
+
+  function documentUploadProblem(projectId, name) {
+    const saved = store.projectDocuments[projectId] || [];
+    if (saved.length >= MAX_PROJECT_DOCUMENTS) {
+      return `A project can hold up to ${MAX_PROJECT_DOCUMENTS} documents. Delete one before adding another.`;
+    }
+    const isDuplicate = saved.some((item) => item.name.toLowerCase() === name?.toLowerCase());
+    return isDuplicate ? `${name} is already uploaded. Delete it before uploading a new copy.` : null;
+  }
+
+  async function uploadDocument(req, res, projectId, user) {
+    const full = documentUploadProblem(projectId);
+    check(!full, full);
+    const { name, data } = await readDocumentUpload(req);
+    const early = documentUploadProblem(projectId, name);
+    check(!early, early);
+    const text = await extractDocumentText(name, data);
+    const id = randomUUID();
+    await mkdir(documentsDir, { recursive: true });
+    await writeFile(documentPath(id, 'text'), JSON.stringify(vault.encode({ documentText: text })), { flag: 'wx' });
+    const file = { name, content: data.toString('base64') };
+    await writeFile(documentPath(id, 'file'), JSON.stringify(vault.encode({ documentFile: file })), { flag: 'wx' });
+
+    // Checked again because another upload can finish while this one is being read and saved.
+    const late = documentUploadProblem(projectId, name);
+    if (late) {
+      await Promise.all(['text', 'file'].map((part) => rm(documentPath(id, part), { force: true })));
+      check(false, late);
+    }
+    const document = {
+      id,
+      name,
+      size: data.length,
+      readable: Boolean(text),
+      uploadedAt: new Date().toISOString(),
+      uploadedBy: user.name || user.username,
+    };
+    store.projectDocuments[projectId] = [...(store.projectDocuments[projectId] || []), document];
+    await persist();
+    await json(res, { document, documents: store.projectDocuments[projectId] }, 201);
+  }
+
+  async function documentRoutes(req, res, route, url, user) {
+    const match = route.match(DOCUMENT_ROUTE);
+    if (!match) return false;
+    const [, projectId, documentId, part] = match;
+    findProject(projectId);
+    if (!can(auth.find(user.id), 'qa')) throw httpError('QA Studio access is required.', 403);
+    const documents = store.projectDocuments[projectId] || [];
+    const document = documents.find((item) => item.id === documentId);
+    if (documentId && !document) throw httpError('This document is no longer available. Reopen Related Document to see the current list.', 404);
+
+    if (!documentId && req.method === 'GET') {
+      await json(res, { documents });
+    } else if (!documentId && req.method === 'POST') {
+      await uploadDocument(req, res, projectId, user);
+    } else if (documentId && !part && req.method === 'GET') {
+      await json(res, { document, text: await readDocumentPart(document.id, 'text', 'documentText'), inline: canPreviewInline(document.name) });
+    } else if (part && req.method === 'GET') {
+      const file = await readDocumentPart(document.id, 'file', 'documentFile');
+      const inline = canPreviewInline(document.name) && url.searchParams.get('download') !== '1';
+      res.writeHead(200, {
+        'Content-Type': documentType(document.name),
+        'Content-Disposition': `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(document.name)}`,
+      });
+      res.end(Buffer.from(file.content, 'base64'));
+    } else if (documentId && !part && req.method === 'DELETE') {
+      store.projectDocuments[projectId] = documents.filter((item) => item.id !== documentId);
+      await persist();
+      await Promise.all(['text', 'file'].map((name) => rm(documentPath(documentId, name), { force: true })));
+      await json(res, { documents: store.projectDocuments[projectId] });
+    } else {
+      await json(res, { error: 'Unsupported document operation.' }, 405);
+    }
+    return true;
+  }
+
   async function requirementRoutes(req, res, route, url, user) {
     const match = route.match(REQUIREMENT_ROUTE);
     if (!match) return false;
@@ -2291,6 +2543,7 @@ async function createUnlockedStudio({
   async function reportIssue(res, input) {
     const project = findProject(input.projectId);
     check(project.tests.some((test) => test.id === input.testId), 'Test case not found.');
+    const issueRunId = input.runId ? issueRun(project, findCase(project, input.testId), input.runId).id : null;
     const validRequestId = typeof input.requestId === 'string' && /^[a-f0-9-]{36}$/i.test(input.requestId);
     check(validRequestId, 'Issue request ID is required.');
     const previous = store.issueReports.find((issue) => issue.requestId === input.requestId);
@@ -2311,7 +2564,7 @@ async function createUnlockedStudio({
     const config = structuredClone(store.bugTracker);
     check(config?.connected, 'Connect Jira successfully in Settings before reporting an issue.');
     const entry = previous || { requestId: input.requestId, projectId: project.id, testId: input.testId };
-    Object.assign(entry, { status: 'pending', summary: draft.summary });
+    Object.assign(entry, { status: 'pending', summary: draft.summary, runId: issueRunId });
     if (!previous) store.issueReports.push(entry);
     await persist();
     try {
@@ -2328,7 +2581,122 @@ async function createUnlockedStudio({
     }
   }
 
-  async function bugTrackerRoutes(req, res, route) {
+  const findCase = (project, id) =>
+    project.tests.find((test) => test.id === id || test.automation?.id === id);
+
+  function issueRun(project, testCase, runId) {
+    if (runId) {
+      const run = findRun(runId);
+      check(run.projectId === project.id && caseRun(run, testCase.id), 'This test case is not part of the run.');
+      return run;
+    }
+    return store.runs
+      .filter((run) => run.projectId === project.id && caseRun(run, testCase.id))
+      .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))[0];
+  }
+
+  async function evidenceWithSizes(run, testId) {
+    const items = await Promise.all(
+      collectEvidence(runForViewer(run), testId).map(async (item) => {
+        const size = (await stat(path.join(artifactsDir, item.file)).catch(() => null))?.size;
+        return size === undefined ? null : { ...item, size };
+      }),
+    );
+    const report = await reportHtml(caseRun(runForViewer(run), testId), artifactsDir);
+    items.push({
+      id: REPORT_EVIDENCE_ID,
+      name: `run-report-${run.id}.html`,
+      label: 'HTML run report',
+      size: Buffer.byteLength(report),
+      checked: false,
+    });
+    return items.filter(Boolean).map(({ file, ...item }) => ({ ...item, tooLarge: item.size > MAX_ATTACHMENT_BYTES }));
+  }
+
+  async function sendIssueDraft(res, url) {
+    const project = findProject(url.searchParams.get('projectId'));
+    const testCase = findCase(project, url.searchParams.get('testId'));
+    check(testCase, 'Test case not found.');
+    const run = issueRun(project, testCase, url.searchParams.get('runId'));
+    await json(res, {
+      testId: testCase.id,
+      runId: run?.id || null,
+      draft: buildIssueDraft({
+        project,
+        testCase,
+        run: run && runForViewer(run),
+        userName: currentUser()?.name || currentUser()?.username || currentUser()?.email,
+      }),
+      evidence: run ? await evidenceWithSizes(run, testCase.id) : [],
+      maxAttachmentBytes: MAX_ATTACHMENT_BYTES,
+      existing: store.issueReports.filter(
+        (issue) => issue.status === 'created' && issue.projectId === project.id && issue.testId === testCase.id,
+      ),
+    });
+  }
+
+  async function readAttachmentFile(req) {
+    let name = null;
+    try {
+      name = attachmentName(decodeURIComponent(req.headers['x-file-name'] || ''));
+    } catch {
+      // A malformed name is rejected below, like any other invalid file name.
+    }
+    check(name, 'This file type cannot be attached. Use images, video, logs, PDF or zip.');
+    let received = 0;
+    const chunks = [];
+    for await (const chunk of req) {
+      received += chunk.length;
+      if (received > MAX_ATTACHMENT_BYTES) throw httpError('Attachments can be up to 10 MB each.', 413);
+      chunks.push(chunk);
+    }
+    return { name, data: Buffer.concat(chunks) };
+  }
+
+  async function readEvidenceFile(entry, evidenceId) {
+    const run = findRun(entry.runId);
+    if (evidenceId === REPORT_EVIDENCE_ID) {
+      const html = await reportHtml(caseRun(runForViewer(run), entry.testId), artifactsDir);
+      return { name: `run-report-${run.id}.html`, data: Buffer.from(html) };
+    }
+    const item = collectEvidence(runForViewer(run), entry.testId).find((candidate) => candidate.id === evidenceId);
+    check(item, 'This file is not part of the run.');
+    const data = await readFile(path.join(artifactsDir, item.file));
+    return { name: item.name, data };
+  }
+
+  async function attachToIssue(req, res, requestId) {
+    const entry = store.issueReports.find((issue) => issue.requestId === requestId);
+    if (!isVisible(entry) || entry.status !== 'created') throw httpError('Issue not found', 404);
+    const config = structuredClone(store.bugTracker);
+    check(config?.connected && entry.url?.startsWith(`${config.siteUrl}/`), 'Connect this Jira site in Settings before adding attachments.');
+    const isRawFile = (req.headers['content-type'] || '').startsWith('application/octet-stream');
+    const file = isRawFile ? await readAttachmentFile(req) : await readEvidenceFile(entry, (await readBody(req)).evidenceId);
+    if (file.data.length > MAX_ATTACHMENT_BYTES) throw httpError('Attachments can be up to 10 MB each.', 413);
+    entry.attachments ||= [];
+    // A retry after a partial failure must not attach the same file twice.
+    if (!entry.attachments.includes(file.name)) {
+      await uploadJiraAttachment(config, entry.key, file, bugTrackerFetcher);
+      entry.attachments.push(file.name);
+      await persist();
+    }
+    await json(res, { name: file.name, attachments: entry.attachments });
+  }
+
+  async function bugTrackerRoutes(req, res, route, url) {
+    if (route === '/api/issues/draft' && req.method === 'GET') {
+      await sendIssueDraft(res, url);
+      return true;
+    }
+    if (route === '/api/issues/options' && req.method === 'GET') {
+      await json(res, await jiraIssueOptions(store.bugTracker, url.searchParams.get('issueTypeId'), bugTrackerFetcher));
+      return true;
+    }
+    const attachmentRoute = route.match(/^\/api\/issues\/([a-f0-9-]{36})\/attachments$/i);
+    if (attachmentRoute && req.method === 'POST') {
+      await attachToIssue(req, res, attachmentRoute[1]);
+      return true;
+    }
     if (route === '/api/bug-tracker' && req.method === 'GET') {
       await json(res, publicBugTracker(store.bugTracker));
       return true;
@@ -2610,6 +2978,7 @@ async function createUnlockedStudio({
 
   async function overviewRoutes(req, res, route, url) {
     if (req.method !== 'GET' || route !== '/api/automation/execution-overview') return false;
+    check(url.searchParams.get('projectId'), 'projectId is required.');
     const project = findProject(url.searchParams.get('projectId'));
     const runs = store.runs.filter((run) => isVisible(run) && run.projectId === project.id);
     const result = queryExecutionOverview(runs, url.searchParams);
@@ -2667,6 +3036,7 @@ async function createUnlockedStudio({
     workspaceRoutes,
     dataRoutes,
     runRoutes,
+    documentRoutes,
     requirementRoutes,
     bugTrackerRoutes,
     vpnRoutes,
@@ -2781,6 +3151,7 @@ async function createUnlockedStudio({
         const userMessage = error.userMessage || (isRequirementRoute ? requirementErrorUserMessage(error, status) : undefined);
         if (userMessage) body.userMessage = userMessage;
         if (error.code) body.code = error.code;
+        if (error.issues) body.issues = error.issues;
         await json(res, body, status);
       }
     }),

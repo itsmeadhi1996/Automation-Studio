@@ -9,13 +9,17 @@ const MAX_QUEUE = 30;
 const MAX_WARNINGS = 10;
 const MAX_WARNING_DETAIL = 500;
 const NAVIGATION_TIMEOUT_MS = 15000;
+const CONTENT_TIMEOUT_MS = 25000;
+const RENDER_TIMEOUT_MS = 10000;
+const FOLLOWED_PAGE_RENDER_TIMEOUT_MS = 2000;
 const READINESS_TIMEOUT_MS = 5000;
+const CONTROL_SELECTOR = 'input,textarea,select,button,a,[role="button"],[role="checkbox"],[role="tab"]';
 const UNSAFE_LINK = /logout|log-out|signout|sign-out|delete|remove|destroy|unsubscribe|checkout|purchase|confirm|activate|reset|token|secret|download/i;
 const FILE_LINK = /\.(pdf|zip|png|jpe?g|gif|exe|csv|xlsx?|docx?)$/i;
 
 // Runs in the browser, so it cannot use anything from this module. Collects structure and
 // constraints, never entered values.
-function pageStructure() {
+function pageStructure(controlSelector) {
   const isVisible = (el) => Boolean(el.getClientRects().length) && getComputedStyle(el).visibility !== 'hidden';
   const clean = (value) =>
     String(value || '')
@@ -31,7 +35,7 @@ function pageStructure() {
     el.getAttribute('name') ||
     el.id;
 
-  const controls = [...document.querySelectorAll('input,textarea,select,button,a,[role="button"],[role="checkbox"],[role="tab"]')]
+  const controls = [...document.querySelectorAll(controlSelector)]
     .filter(isVisible)
     .slice(0, 100)
     .map((el, index) => ({
@@ -70,6 +74,34 @@ function pageStructure() {
   };
 }
 
+// Runs in the browser. Client-rendered pages have no controls until their scripts finish.
+function hasVisibleControl(controlSelector) {
+  return [...document.querySelectorAll(controlSelector)].some(
+    (el) => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden',
+  );
+}
+
+const ignoringTimeout = (error) => {
+  if (error.name !== 'TimeoutError' && error.name !== 'PageReadinessError') throw error;
+};
+
+// A server response proves the URL opens, even if a slow script then holds the page back.
+// The page may recover on a second request, and is otherwise inspected as far as it loaded.
+async function openPage(page, url, { attempts, contentTimeout, remaining }) {
+  for (let attempt = 1; ; attempt += 1) {
+    const response = await page.goto(url, { waitUntil: 'commit', timeout: remaining(NAVIGATION_TIMEOUT_MS) });
+    const status = response?.status() || 200;
+    if (status >= 400) throw new Error(`HTTP ${status}`);
+    try {
+      await page.waitForLoadState('domcontentloaded', { timeout: remaining(contentTimeout) });
+      return { status, loaded: true };
+    } catch (error) {
+      ignoringTimeout(error);
+      if (attempt >= attempts) return { status, loaded: false };
+    }
+  }
+}
+
 // Ordinary same-site navigation is followed. Action and token URLs stay unvisited evidence.
 function followableLink(control, origin) {
   if (!control.href || control.disabled) return null;
@@ -104,7 +136,7 @@ function storedVariableRedactor(project) {
   return redact;
 }
 
-export async function inspectRequirementApp(project, inputUrl, { launcher = launchBrowser, signal } = {}) {
+export async function inspectRequirementApp(project, inputUrl, { launcher = launchBrowser, signal, contentTimeout = CONTENT_TIMEOUT_MS } = {}) {
   checkpoint(signal);
   const startUrl = requirementUrl(inputUrl);
   const deadline = Date.now() + DEADLINE_MS;
@@ -140,12 +172,14 @@ export async function inspectRequirementApp(project, inputUrl, { launcher = laun
       seen.add(url);
 
       try {
-        const response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: remaining(NAVIGATION_TIMEOUT_MS) });
-        const status = response?.status() || 200;
-        if (status >= 400) throw new Error(`HTTP ${status}`);
-        await waitForPageReady(page, { timeout: remaining(READINESS_TIMEOUT_MS) });
+        const { status, loaded } = await openPage(page, url, { attempts: pages.length ? 1 : 2, contentTimeout, remaining });
+        if (loaded) {
+          const renderTimeout = pages.length ? FOLLOWED_PAGE_RENDER_TIMEOUT_MS : RENDER_TIMEOUT_MS;
+          await page.waitForFunction(hasVisibleControl, CONTROL_SELECTOR, { timeout: remaining(renderTimeout) }).catch(ignoringTimeout);
+          await waitForPageReady(page, { timeout: remaining(READINESS_TIMEOUT_MS) }).catch(ignoringTimeout);
+        }
 
-        const data = await page.evaluate(pageStructure);
+        const data = await page.evaluate(pageStructure, CONTROL_SELECTOR);
         const finalUrl = requirementUrl(page.url());
         if (!pages.length) {
           origin = new URL(finalUrl).origin;
@@ -156,6 +190,9 @@ export async function inspectRequirementApp(project, inputUrl, { launcher = laun
         if (pages.some((item) => item.url === finalUrl)) continue;
 
         pages.push({ ...data, url: finalUrl, status });
+        if (!data.controls.length) {
+          warnings.push(`No fields or controls could be read from ${finalUrl}. The page may not have finished loading, so test cases for it rely on the description.`);
+        }
         if (data.truncated) warnings.push(`Only the first 100 visible controls on ${finalUrl} were inspected.`);
         if (data.controls.some((control) => control.type === 'password')) {
           warnings.push(`Sign-in controls were found on ${finalUrl}. Authenticated pages require a separate test execution with credentials.`);

@@ -22,6 +22,7 @@ function fakeJira(){
   if(route.endsWith('/project/QA'))return response({id:'10001',key:'QA',name:'Quality project'});
   if(route.endsWith('/mypermissions'))return response({permissions:{BROWSE_PROJECTS:{havePermission:true},CREATE_ISSUES:{havePermission:control.permission}}});
   if(route.endsWith('/issuetypes'))return response({issueTypes:[{id:'10004',name:'Bug',subtask:false}],startAt:0,maxResults:100,total:1});
+  if(route.endsWith('/issuetypes/10004'))return response({fields:[],startAt:0,maxResults:100,total:0});
   if(route.endsWith('/issue')){
    if(control.delay)await control.delay;
    if(control.uncertain)throw new Error('network failure');
@@ -119,16 +120,16 @@ test('Settings connection enables Report issue in case details and shows created
  await page.screenshot({path:path.join(storage,'jira-settings.png'),fullPage:true});
  await page.goto(base+'/#case/'+p.tests[0].id);
  await page.getByRole('button',{name:'Report issue',exact:true}).click();
- await page.getByLabel('Issue summary').fill('Welcome message is incorrect');
- await page.getByLabel('Issue description').fill('Steps: submit welcome form.\nExpected: welcome message.\nActual: error.');
- await page.getByRole('button',{name:'Create Jira issue',exact:true}).click();
+ await page.getByLabel('Bug title').fill('Welcome message is incorrect');
+ await page.getByLabel('Steps to reproduce').fill('Steps: submit welcome form.\nExpected: welcome message.\nActual: error.');
+ await page.getByRole('button',{name:'Report as issue',exact:true}).click();
  await page.getByRole('link',{name:'QA-42',exact:true}).waitFor();
  assert.equal(jira.calls.filter(call=>call.options.method==='POST').length,1);
  await page.screenshot({path:path.join(storage,'jira-case-details.png'),fullPage:true});
  await page.setViewportSize({width:390,height:900});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth));
  await page.getByRole('button',{name:'Report issue',exact:true}).click();
- assert.ok(await page.evaluate(()=>document.querySelector('#dialog').getBoundingClientRect().right<=innerWidth));
+ assert.ok(await page.evaluate(()=>document.querySelector('#issue-dialog').getBoundingClientRect().right<=innerWidth));
  await page.getByRole('button',{name:'Cancel',exact:true}).click();
  await api('/api/bug-tracker','DELETE',{});await page.reload();
  await page.getByRole('link',{name:'QA-42',exact:true}).waitFor();

@@ -18,7 +18,6 @@
     '[data-action="history-retention"]',
     '[data-action="backup-workspace"]',
     '[data-action="restore-workspace"]',
-    '[data-action="bug-settings"]',
   ].join(',');
 
   function allowed(permission) {

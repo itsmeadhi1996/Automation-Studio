@@ -18,6 +18,11 @@ const MISSING_KEY_FAILURE =
   'Nothing was changed. Restore credentials.key from a backup made under the original account. ' +
   'See docs/RECOVERY.md.';
 
+const WRONG_KEY_FAILURE =
+  'data/credentials.key cannot decrypt this workspace: it belongs to another workspace or was ' +
+  'replaced. Nothing was changed. Restore the credentials.key saved with this data/ folder. ' +
+  'See docs/RECOVERY.md.';
+
 const PROTECTED_KEYS = new Set([
   'agentDrafts',
   'password',
@@ -32,6 +37,9 @@ const PROTECTED_KEYS = new Set([
   'localTestData',
   'localValues',
   'localDataFile',
+  'documentFile',
+  'documentText',
+  'projectDocuments',
   'projectMembers',
   'projectAccessRevisions',
   'workLog',
@@ -87,9 +95,10 @@ async function workspaceHasSealedData(directory) {
   const candidates = names
     .filter((name) => /^(studio\.json|recording\.json|backup-[\w-]+\.json)$/.test(name))
     .map((name) => path.join(directory, name));
-  if (names.includes('local-test-files')) {
-    const uploads = await readdir(path.join(directory, 'local-test-files'));
-    candidates.push(...uploads.map((name) => path.join(directory, 'local-test-files', name)));
+  for (const folder of ['local-test-files', 'project-documents']) {
+    if (!names.includes(folder)) continue;
+    const uploads = await readdir(path.join(directory, folder));
+    candidates.push(...uploads.map((name) => path.join(directory, folder, name)));
   }
   for (const file of candidates) {
     if (await fileHasSealedData(file)) return true;
@@ -141,9 +150,15 @@ export async function createVault(directory) {
 
   const open = (value) => {
     const data = Buffer.from(value.$sealed, 'base64');
-    const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, IV_BYTES));
-    decipher.setAuthTag(data.subarray(IV_BYTES, IV_BYTES + TAG_BYTES));
-    const plain = Buffer.concat([decipher.update(data.subarray(IV_BYTES + TAG_BYTES)), decipher.final()]);
+    let plain;
+    try {
+      const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, IV_BYTES));
+      decipher.setAuthTag(data.subarray(IV_BYTES, IV_BYTES + TAG_BYTES));
+      plain = Buffer.concat([decipher.update(data.subarray(IV_BYTES + TAG_BYTES)), decipher.final()]);
+    } catch {
+      // GCM authentication fails for a wrong key and for damaged data alike.
+      throw new Error(WRONG_KEY_FAILURE);
+    }
     return JSON.parse(plain.toString());
   };
 

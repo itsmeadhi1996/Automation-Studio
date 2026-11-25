@@ -171,10 +171,26 @@
     return `<div class="result-step">${parts.join('')}</div>`;
   }
 
+  // Dataset rows of a case share one bug, so only the case's first row offers it.
+  function renderBugControls(run, test) {
+    const caseKey = (item) => item.qaCaseId || item.sourceTestId || item.id;
+    const rows = run.tests.filter((item) => caseKey(item) === caseKey(test));
+    if (rows[0] !== test) return '';
+    const isStartupFailure = run.error && run.tests.every((item) => ['pending', 'skipped'].includes(item.status));
+    const markup = StudioIssueReport.controls({
+      projectId,
+      testIds: [test.sourceTestId, test.qaCaseId, test.id],
+      runId: run.id,
+      statuses: [...rows.map((item) => item.status), ...(isStartupFailure ? ['failed'] : [])],
+    });
+    return markup ? `<div class="issue-controls">${markup}</div>` : '';
+  }
+
   function renderRunTest(run, test) {
     const key = `${run.id}:${test.id}`;
     const parts = [`<summary><span>${esc(test.name)}</span>${badge(test.status)}</summary>`];
     if (test.error) parts.push(`<p class="error-text">${esc(test.error)}</p>`);
+    parts.push(renderBugControls(run, test));
     if (test.trace) {
       parts.push(`<a href="${artifactUrl(test.trace)}" download>Download execution trace</a>`);
     }
@@ -212,6 +228,8 @@
           <div class="inline-actions">
             <a target="_blank" rel="noopener" href="${reportUrl}">HTML report</a>
             <a href="${reportUrl}.pdf" download>PDF report</a>
+            <a target="_blank" rel="noopener" href="${reportUrl}/interactive">Interactive report</a>
+            <a href="${reportUrl}.json" download>Playwright JSON</a>
             ${cancel}
           </div>
           ${error}
@@ -283,7 +301,7 @@
       $('#history-error').hidden = true;
       syncUrl();
       // Rendering only on change keeps open details, focus and DOM identity across polls.
-      const signature = JSON.stringify(result);
+      const signature = JSON.stringify(result) + StudioIssueReport.signature();
       if (signature !== lastRendered) {
         lastRendered = signature;
         renderResults();

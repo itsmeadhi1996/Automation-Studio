@@ -1,8 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readdir, rm } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createStudio } from './support.mjs';
+import { createVault } from '../storage.mjs';
 
 const ADMIN = { username: 'regression-admin', name: 'Regression admin', password: 'Disposable-regression-2026' };
 const QA_USER = { username: 'regression-qa', name: 'Regression QA', password: 'Disposable-qa-password-2026' };
@@ -213,4 +215,25 @@ test('seed project contains the welcome test against /demo', async (t) => {
   assert.equal(project.name, 'Getting started');
   assert.equal(project.tests[0].tcNumber, 1);
   assert.equal(project.environments[0].variables.BASE_URL, 'http://127.0.0.1:3514/demo');
+});
+
+test('F11: a credentials.key that cannot decrypt the workspace fails clearly and changes nothing', async () => {
+  const directory = path.resolve('.test-output', `tmp-part2-wrong-key-${Date.now()}`);
+  await mkdir(directory, { recursive: true });
+  const keyFile = path.join(directory, 'credentials.key');
+  await writeFile(keyFile, JSON.stringify({ key: randomBytes(32).toString('base64') }));
+  const sealed = (await createVault(directory)).encode({ password: 'vault-secret' });
+  const otherKey = JSON.stringify({ key: randomBytes(32).toString('base64') });
+  await writeFile(keyFile, otherKey);
+  const vault = await createVault(directory);
+  assert.throws(() => vault.decode(sealed), /cannot decrypt this workspace.*Nothing was changed/);
+  assert.equal(await readFile(keyFile, 'utf8'), otherKey);
+  await rm(directory, { recursive: true, force: true });
+});
+
+test('execution overview requires projectId', async (t) => {
+  const f = await fixture(t, 3517);
+  const response = await f.api('/api/automation/execution-overview', 'GET', undefined, f.adminCookie);
+  assert.equal(response.status, 400);
+  assert.equal(response.data.error, 'projectId is required.');
 });

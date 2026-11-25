@@ -280,7 +280,132 @@
   overflow-wrap: anywhere;
 }
 
+/* Related Document popup */
+.documents-dialog {
+  width: 680px;
+  max-width: calc(100vw - 32px);
+  padding: 0;
+}
+
+.documents-dialog.wide {
+  width: 980px;
+}
+
+.documents-body {
+  display: grid;
+  gap: 16px;
+  max-height: 65vh;
+  padding: 23px 27px;
+  overflow: auto;
+}
+
+.documents-body p {
+  margin: 0;
+}
+
+.documents-error {
+  margin: 0;
+  padding: 12px 27px 0;
+}
+
+.documents-drop {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  gap: 6px;
+  padding: 28px 16px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.documents-drop:hover,
+.documents-drop:focus-within,
+.documents-drop.dragging {
+  border-color: var(--accent, currentColor);
+}
+
+/* The whole zone is the file control's label, so the input stays focusable but out of sight. */
+.documents-drop input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+}
+
+.documents-list,
+.documents-chosen {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.documents-row,
+.documents-chosen li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.documents-details {
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  min-width: 0;
+}
+
+.documents-name {
+  min-width: 0;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.documents-chosen .documents-name {
+  flex: 1;
+}
+
+.documents-row-actions {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
+
+.documents-frame {
+  width: 100%;
+  height: 60vh;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.documents-text {
+  max-height: 55vh;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: auto;
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 700px) {
+  .documents-body {
+    padding: 18px;
+  }
+
+  .documents-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .requirement-form {
     padding: 18px;
   }

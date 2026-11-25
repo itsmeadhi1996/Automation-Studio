@@ -23,7 +23,7 @@ test('project assignment isolates dashboards, history, operations and artifacts 
  const privateRun=(await api('/api/manual-runs','POST',{projectId:other.id},f.adminCookie)).data;
  const mine=await api('/api/manual-runs','POST',{projectId:p.id,name:'Member manual run'},cookie);assert.equal(mine.status,201);
  f.studio.store.runs.find(r=>r.id===privateRun.id).tests[0].steps[0].screenshot='private-shot.png';await writeFile(path.join(f.storage,'artifacts','private-shot.png'),'private');
- for(const route of ['/api/runs/'+privateRun.id,'/api/runs/'+privateRun.id+'/report','/api/runs/'+privateRun.id+'/report.pdf','/api/runs?projectId='+other.id,'/artifacts/private-shot.png'])assert.equal((await api(route,'GET',undefined,cookie)).status,403,route);
+ for(const route of ['/api/runs/'+privateRun.id,'/api/runs/'+privateRun.id+'/report','/api/runs/'+privateRun.id+'/report.pdf','/api/runs/'+privateRun.id+'/report.json','/api/runs/'+privateRun.id+'/report/interactive','/api/runs?projectId='+other.id,'/artifacts/private-shot.png'])assert.equal((await api(route,'GET',undefined,cookie)).status,403,route);
  assert.equal((await api('/api/runs/'+privateRun.id,'DELETE',undefined,cookie)).status,403);
  assert.equal((await api('/api/manual-runs/'+privateRun.id+'/cancel','POST',{revision:1},cookie)).status,403);
  assert.equal((await api('/api/runs/'+privateRun.id+'/cancel','POST',{},cookie)).status,403);

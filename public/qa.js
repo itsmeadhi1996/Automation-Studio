@@ -1582,25 +1582,6 @@ function showHelp() {
   );
 }
 
-function issueDescription(test) {
-  const steps = test.qa?.manualSteps?.length
-    ? test.qa.manualSteps.map((step, index) => `${index + 1}. ${step.instruction}${step.expectedResult ? `\n   Expected: ${step.expectedResult}` : ''}`)
-    : test.steps.map((step, index) => `${index + 1}. ${step.name}`);
-  return [
-    `Project: ${project().name}`,
-    `Test case: ${tc(test)} — ${test.name}`,
-    test.qa?.description || '',
-    `Latest result: ${STATUS_LABELS[latest(test)] || latest(test)}`,
-    '',
-    'Steps to reproduce:',
-    ...steps,
-    '',
-    `Expected result: ${test.qa?.expectedResult || 'Describe the expected outcome.'}`,
-    '',
-    'Actual result:',
-    'Describe what happened.',
-  ].join('\n');
-}
 
 function reportIssue(id) {
   const test = project().tests.find((item) => item.id === id);
@@ -1609,29 +1590,14 @@ function reportIssue(id) {
     notify('Connect Jira successfully in Settings first.', true);
     return;
   }
-  const targetProjectId = project().id;
-  const requestId = crypto.randomUUID();
-  const body = `${input('summary', 'Issue summary', `${tc(test)}: ${test.name}`, 'required maxlength="255"')}
-    ${area('description', 'Issue description', issueDescription(test), 'required')}
-    <p class="field-hint">Creates a ${e(tracker.issueTypeName)} in ${e(tracker.projectKey)}. Only the summary and description shown here are sent to Jira.</p>`;
-  modal(
-    'Report issue to Jira',
-    body,
-    async (values) => {
-      try {
-        const issue = await api('/api/issues', 'POST', { ...values, projectId: targetProjectId, testId: id, requestId });
-        await refresh();
-        render();
-        notify(`Jira issue ${issue.key} created.`);
-      } catch (error) {
-        await refresh().catch(() => {});
-        throw error;
-      }
-    },
-    'Create Jira issue',
-    true,
-  );
+  void StudioIssueReport.open({ projectId: project().id, testId: id });
 }
+
+window.addEventListener('studio:issue-reported', () => {
+  refresh()
+    .then(render)
+    .catch(() => {});
+});
 
 /* ---- Test plan page wiring ---------------------------------------------- */
 
@@ -1671,7 +1637,9 @@ function runName(run) {
 function reportLinks(run) {
   const id = e(run.id);
   return `<a class="button" href="/api/runs/${id}/report" target="_blank" rel="noopener">HTML</a>
-    <a class="button" href="/api/runs/${id}/report.pdf" target="_blank" rel="noopener">PDF</a>`;
+    <a class="button" href="/api/runs/${id}/report.pdf" target="_blank" rel="noopener">PDF</a>
+    <a class="button" href="/api/runs/${id}/report/interactive" target="_blank" rel="noopener">Interactive</a>
+    <a class="button" href="/api/runs/${id}/report.json" download>JSON</a>`;
 }
 
 function runRow(run, isReports) {
@@ -1811,7 +1779,9 @@ function runActions(run) {
   const id = `data-id="${e(run.id)}"`;
   if (run.status !== 'running') {
     return `<a class="button" href="/api/runs/${e(run.id)}/report" target="_blank" rel="noopener">${icon('reports')}HTML report</a>
-      <a class="button" href="/api/runs/${e(run.id)}/report.pdf" target="_blank" rel="noopener">${icon('download')}PDF report</a>`;
+      <a class="button" href="/api/runs/${e(run.id)}/report.pdf" target="_blank" rel="noopener">${icon('download')}PDF report</a>
+      <a class="button" href="/api/runs/${e(run.id)}/report/interactive" target="_blank" rel="noopener">${icon('reports')}Interactive report</a>
+      <a class="button" href="/api/runs/${e(run.id)}/report.json" download>${icon('download')}Playwright JSON</a>`;
   }
   if (run.mode !== 'manual') return button('cancel-auto', 'Cancel run', 'close', id);
   const canComplete = run.tests.every((test) => test.steps.every((step) => TERMINAL_STATUSES.includes(step.status)));

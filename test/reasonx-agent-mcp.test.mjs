@@ -197,7 +197,7 @@ test('AI Assistance shows the local model status, switches the reasoning mode an
   await page.route('**/api/ai/create', route => { requested = true; route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'Stopped by the test' }) }); });
   await page.locator('#ai-prompt').fill('Open the demo page');
   await page.locator('#ai-prompt').press('Control+Enter');
-  await page.locator('#toast').filter({ hasText: 'Stopped by the test' }).waitFor();
+  await page.locator('dialog.issue-dialog').filter({ hasText: 'Stopped by the test' }).waitFor();
   assert.equal(requested, true);
   assert.equal(await page.locator('.ai-progress').count(), 0);
   assert.deepEqual(errors, []);

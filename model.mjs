@@ -15,6 +15,8 @@ const MAX_VARIABLES = 500;
 const MAX_STEPS = 1000;
 const MAX_TESTS = 1000;
 const MAX_TEST_PLANS = 1000;
+export const MAX_PROCESS_RUNS = 1000;
+const MAX_EXPANDED_PROCESS_STEPS = 10000;
 const MAX_MAPPINGS = 1000;
 const MAX_LOCATOR_TEMPLATES = 1000;
 const MAX_OBJECTS = 500;
@@ -496,6 +498,19 @@ export function normalizeProject(input, previous, store) {
     ),
   }));
 
+  // Process automation flows belong to Automation Studio only. A save without them keeps the stored ones.
+  project.processes = normalizeCollection(
+    { processes: input.processes ?? previous?.processes ?? [] },
+    'processes',
+    (flow) => {
+      // Only process steps carry the Repeat choice.
+      const steps = normalizeSteps(flow.steps).map((step, index) =>
+        flow.steps[index]?.repeat === true ? { ...step, repeat: true } : step,
+      );
+      return { steps, runCount: processRunCount(flow.runCount ?? 1) };
+    },
+  );
+
   project.locatorTemplates = normalizeLocatorTemplates(input, previous);
   project.objects = normalizeObjects(input, previous, project.locatorTemplates);
   project.repositoryLegacyObjects = normalizeLegacyObjects(input, previous);
@@ -581,7 +596,7 @@ export function normalizeProject(input, previous, store) {
   }
 
   migrateRepository(project);
-  for (const owner of [...project.tests, ...project.prerequisites]) {
+  for (const owner of [...project.tests, ...project.prerequisites, ...project.processes]) {
     for (const step of owner.steps) {
       if (step.locatorType === 'object') {
         reference(step.target, 'objects');
@@ -628,12 +643,78 @@ function runTestSnapshot(test, dataRow, rowIndex, project) {
   };
 }
 
-export function prepareRun(project, { testId, testIds, suiteId, planId } = {}) {
-  const tests = selectPlannedTests(project, { testId, testIds, suiteId, planId }, { requirePlan: false });
-  const snapshots = tests.flatMap((test) => {
-    const rows = test.dataRows?.length ? test.dataRows : [null];
-    return rows.map((dataRow, rowIndex) => runTestSnapshot(test, dataRow, rowIndex, project));
-  });
+export function processRunCount(value) {
+  assert(
+    Number.isInteger(value) && value >= 1 && value <= MAX_PROCESS_RUNS,
+    `Run count must be a whole number from 1 to ${MAX_PROCESS_RUNS}`,
+  );
+  return value;
+}
+
+// The steps marked Repeat, which must sit next to each other. Null when no step is marked.
+export function repeatedBlock(steps) {
+  const marked = steps.flatMap((step, index) => (step.repeat ? [index] : []));
+  if (!marked.length) return null;
+  const first = marked[0];
+  const last = marked.at(-1);
+  assert(
+    last - first + 1 === marked.length,
+    `Steps marked Repeat must be next to each other. Steps ${first + 1}–${last + 1} include unmarked steps; mark them too or move them outside the block.`,
+  );
+  return { first, last };
+}
+
+// With Repeat steps, the steps before them run once, the marked steps run count times and the
+// steps after them run once, all in one browser session. Without them, the whole process runs
+// count times, each in a fresh session and listed separately in history and reports.
+function processSnapshots(project, processId, runCount) {
+  const flow = project.processes.find((item) => item.id === processId);
+  assert(flow, 'Process not found');
+  const count = processRunCount(runCount ?? flow.runCount);
+  const block = repeatedBlock(flow.steps);
+  if (block) {
+    const body = flow.steps.slice(block.first, block.last + 1);
+    assert(
+      flow.steps.length - body.length + body.length * count <= MAX_EXPANDED_PROCESS_STEPS,
+      `This process would run more than ${MAX_EXPANDED_PROCESS_STEPS} steps. Lower the number of runs or repeat fewer steps.`,
+    );
+    const repeated = Array.from({ length: count }, (_, index) =>
+      body.map((step) => ({ ...structuredClone(step), name: `[run ${index + 1} of ${count}] ${step.name}`, iteration: index + 1 })),
+    ).flat();
+    const range = block.first === block.last ? `step ${block.first + 1}` : `steps ${block.first + 1}–${block.last + 1}`;
+    return [
+      {
+        id: `${flow.id}-repeat`,
+        sourceTestId: flow.id,
+        processId: flow.id,
+        name: `${flow.name} [${range} × ${count}]`,
+        status: 'pending',
+        steps: [
+          ...structuredClone(flow.steps.slice(0, block.first)),
+          ...repeated,
+          ...structuredClone(flow.steps.slice(block.last + 1)),
+        ].map((step) => runStepSnapshot(step, project)),
+      },
+    ];
+  }
+  return Array.from({ length: count }, (_, index) => ({
+    id: `${flow.id}-run-${index + 1}`,
+    sourceTestId: flow.id,
+    processId: flow.id,
+    iteration: index + 1,
+    name: `${flow.name} [run ${index + 1} of ${count}]`,
+    status: 'pending',
+    steps: structuredClone(flow.steps).map((step) => runStepSnapshot(step, project)),
+  }));
+}
+
+export function prepareRun(project, { testId, testIds, suiteId, planId, processId, runCount } = {}) {
+  const snapshots = processId
+    ? processSnapshots(project, processId, runCount)
+    : selectPlannedTests(project, { testId, testIds, suiteId, planId }, { requirePlan: false }).flatMap((test) => {
+        const rows = test.dataRows?.length ? test.dataRows : [null];
+        return rows.map((dataRow, rowIndex) => runTestSnapshot(test, dataRow, rowIndex, project));
+      });
   const activeEnvironment = project.environments.find((item) => item.id === project.activeEnvironmentId);
   const activeProfile = project.jdbcProfiles.find((item) => item.id === project.activeJdbcProfileId);
   return {

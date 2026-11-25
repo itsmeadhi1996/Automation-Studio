@@ -63,3 +63,61 @@ These differ from 3.0 on purpose:
 - A requirement containing only `.` returns 0 cases. In 3.0 it threw a validation error because of an empty clause.
 - Generator warnings are capped at 30, per Reference E. In rare cases this drops the "first 20 notes" line.
 - Inspected control labels are trimmed, as field labels already were.
+
+## Raising bugs from test results
+
+- **Spec change, requested by the project owner on 2026-11-04.** Part 2 section 19 said reports support summary and description only, with no screenshot uploads, and that Report issue appears only on QA details. Reports now also send issue type, priority, severity and attachments, and Automation Studio has a Raise bug button on run history and the test case page.
+- Run evidence is never sent automatically. The popup ticks only the failed step's screenshot, and the user can untick it before reporting.
+- Severity uses a Jira field named Severity when the issue type has a usable one. Otherwise it is written at the top of the description.
+- Popup options are read from Jira when it opens, so no new connection check is needed and existing connections keep working. An account without Create Attachments permission can still report, but cannot attach files.
+- Attachments are limited to 10 MB each. The HTML run report is the only `.html` file allowed, because Studio generates it; users cannot upload their own.
+- A case's dataset rows share one bug per report. Raise bug appears once per case in a run.
+- QA Studio's button keeps its label, stays available for any result and stays hidden until Jira connects. Automation Studio shows Raise bug disabled instead, with a prompt to connect Jira.
+- Created issues use the project's default status. Jira reports the shared connection account as reporter, so the Studio user's name goes in Run details.
+
+## Run report design
+
+- **Spec change, requested by the project owner on 2026-11-05.** Reference B Appendix A gave the report CSS verbatim. The HTML and PDF run reports now use a document-style design instead, so that CSS and its markup no longer apply.
+- The pass rate rounds down, so a run with any failure can never read as 100%.
+- Tests that are not passed, failed or skipped, such as blocked or interrupted ones, count as Not completed instead of being left out of the totals.
+- Reports stay self-contained, with no web fonts, scripts or external files, because they are downloaded, printed and attached to Jira issues.
+
+## Interactive reports and Playwright JSON
+
+- **Added at the project owner's request on 2026-11-05.** Runs and test cases also have a Monocart interactive report and a Playwright JSON download. The HTML and PDF reports stay, because PDFs and Jira attachments need a static document.
+- Studio's runner is not `@playwright/test`, so Monocart's reporter hooks never fire. The run is mapped to Playwright's JSON format, then to Monocart's data, and passed to its `merge` API. A Monocart upgrade can change that data format, so check the interactive report after upgrading.
+- The JSON copies fields by name. Runs also hold stored variables, database profiles and dataset values, none of which may leave in a report.
+- Blocked, interrupted and unfinished tests use Playwright's `interrupted` result, which Playwright counts as skipped. The `qa-status` annotation and the Result column keep the real status.
+- The interactive report runs scripts, so it is served in a CSP sandbox without `allow-same-origin`. Do not add that flag: report scripts would then run with Studio's origin. Monocart's Timeline section and system details are removed because they describe the server.
+- Traces are left out of the interactive report, because Monocart opens them through the external trace.playwright.dev viewer.
+- Screenshots are limited to 25 MB per report, with failed steps' screenshots kept first.
+
+## Related documents
+
+- **Added at the project owner's request on 2026-11-05.** The Requirement page has a Related Document button. It opens an upload window while the project has no documents, and a list with preview and delete once it has some.
+- Documents belong to the project, not to one requirement, because they describe the whole product. Up to 20 per project, 10 MB each: PDF, DOCX, XLSX, CSV, TXT and MD.
+- Files and their extracted text are sealed in `data/project-documents`, as separate files so generation does not decrypt the originals. The list is kept in `store.projectDocuments`, so uploads do not change the project revision or interrupt someone editing a requirement. Workspace backup files hold only the list, and restoring one leaves documents as they are, so back up `data/project-documents` with the rest of `data`.
+- Every AI generation mode reads the documents automatically; Local rules does not use AI, so it does not. Automation Studio's AI does not read them yet. The upload window warns that cloud engines receive the text. This is the one exception to not sending data without review, because reading documents is the point of uploading them.
+- Each engine has its own limit: 40,000 characters for Claude, ChatGPT and Settings providers, 12,000 for Qwen and 700 for ReasonX, whose requests are limited to about 6,000. A warning names any document that did not fully fit.
+- Document text is labelled as untrusted in prompts, because a document can contain text written to steer the AI.
+- A scanned or password-protected file is kept for preview and marked as unreadable by the AI. There is no OCR. Only PDFs preview in their original layout; the other types preview as text and can be downloaded.
+
+## ReasonX location
+
+- The default ReasonX folder is `../../For Ai/aiResoningAgent`, not the spec's `../../../For Ai/aiResoningAgent`. The spec's path was correct for 3.0, which sits one folder deeper; from 4.0 it pointed at `D:\For Ai`. `REASONX_HOME` still overrides it.
+
+## Hardening (Phase 11)
+
+- **zod 4.** `npm audit --omit=dev --audit-level=high` reported GHSA-mrhx-c7xc-m3w5 (memory exhaustion while validating oversized collections), fixed only in zod 4.6.6 and later. zod is now `^4.6.7` instead of Part 4's `^3.25.76`. Both SDKs accept zod 4. Error messages are unchanged, because the code that turns zod issues into messages now reads zod 4's field names (`origin`, `invalid_value`, `int`).
+- `GET /api/automation/execution-overview` without `projectId` returns 400 `projectId is required.`, per Reference A 1.4. Before this, it returned 403 or 404, depending on the user.
+- A `credentials.key` that is well formed but cannot decrypt the workspace now fails with a clear message and changes nothing (F11). Before this, it surfaced Node's raw AES-GCM error.
+- F1 says database passwords are never returned in ordinary responses, but also that administrators and automation users keep 3.0's behaviour. In 3.0 they receive `jdbcProfiles[].password`: the PostgreSQL editor fills the field from it, and `POST /api/jdbc/query` takes the profile from the client. 4.0 keeps that for those users, hides passwords from QA-only users, and blanks them in project export.
+- The Environments & globals hint said values are "stored locally in plain text". `storage.mjs` encrypts `variables` and `globalVariables`, and Reference D section 9 item 11 flagged the wording, so the hint now says the values are stored encrypted.
+- The Jira panel text now names every place bugs can be raised, following the 2026-11-04 change.
+- `[data-action="bug-settings"]` was removed from `ADMIN_ONLY_SELECTOR`. Nothing renders it (Reference D section 9).
+- The restore drill's closing note now also lists `project-documents` and `local-test-files`, which backups do not contain.
+- Two features in the working tree are not in the spec: **Process automation** (record a flow once and run it 1 to 1,000 times, as `mode: "process"` runs) and an **NVIDIA API Catalog** model provider. They are documented in the user manual and API reference as built.
+
+## Changes to ported tests (Phase 11)
+
+- `history-page.test.mjs` read `#history-page-label` straight after `page.reload()`, before the page had rendered it, so the predicate threw instead of waiting. It failed the same way on the Phase 10 commit. The predicate now uses `?.` and waits for the element. What it checks is unchanged.

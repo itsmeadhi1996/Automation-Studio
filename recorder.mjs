@@ -8,6 +8,8 @@ import { automaticallyNameRecordedStep } from './recorder-names.mjs';
 
 const MAX_RECORDED_STEPS = 1000;
 const NAVIGATION_TIMEOUT_MS = 30000;
+// How long to wait for the page title, used to name the first step, before naming it without one.
+const TITLE_WAIT_MS = 5000;
 const EVIDENCE_FOCUS_TIMEOUT_MS = 5000;
 const CAPTURED_ACTIONS = new Set([
   'click',
@@ -643,7 +645,9 @@ export async function startRecording(
   const parsed = new URL(url);
   assert(['http:', 'https:'].includes(parsed.protocol), 'Recording URL must use HTTP or HTTPS');
   assert(!parsed.username && !parsed.password, 'Use a URL without embedded credentials');
-  const test = project.tests.find((item) => item.id === testId);
+  // A recording fills either a test case or a process automation flow.
+  const flow = project.processes?.find((item) => item.id === testId);
+  const test = project.tests.find((item) => item.id === testId) || flow;
   assert(test, 'Test case not found');
 
   const browser = await launchBrowser(project.browser, { headless });
@@ -660,6 +664,7 @@ export async function startRecording(
       projectId: project.id,
       testId,
       testName: test.name,
+      ...(flow ? { kind: 'process' } : {}),
       browser: project.browser,
       status: 'recording',
       mode: 'actions',
@@ -708,6 +713,7 @@ export async function startRecording(
           projectId: this.projectId,
           testId,
           testName: this.testName,
+          kind: this.kind || 'test',
           browser: this.browser,
           status: this.status,
           mode: this.mode,
@@ -883,8 +889,11 @@ export async function startRecording(
       void session.save().catch(() => {});
     });
 
-    await page.goto(parsed.href, { waitUntil: 'domcontentloaded', timeout: NAVIGATION_TIMEOUT_MS });
-    const title = await page.title();
+    // Wait only for the server to answer: the capture script is injected into every page, so
+    // recording works while a slow site is still loading its scripts. Playback does the same.
+    await page.goto(parsed.href, { waitUntil: 'commit', timeout: NAVIGATION_TIMEOUT_MS });
+    await page.waitForLoadState('domcontentloaded', { timeout: TITLE_WAIT_MS }).catch(() => {});
+    const title = await page.title().catch(() => '');
     session.steps[0] = automaticallyNameRecordedStep(session.steps[0], test.qa?.manualSteps, { pageTitle: title });
     return session;
   } catch (error) {

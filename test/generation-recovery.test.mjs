@@ -55,6 +55,26 @@ test('generation reports progress, rejects duplicates, persists its result and r
   assert.equal(reopened.store.aiGenerations[0].explanation,'Review the saved steps.');
 });
 
+test('a check step with no locator is corrected automatically using the expected message',{timeout:30000},async t=>{
+  const inputs=[];
+  const draftWith=(base,check)=>({ok:true,json:async()=>({choices:[{finish_reason:'stop',message:{content:JSON.stringify({
+    name:'Rejected sign-in',explanation:'The message appears after the click.',
+    steps:[{action:'navigate',value:base+'/demo'},{action:'click',locatorType:'text',target:'Get started'},{action:'text',value:'Invalid credentials',...check}]
+  })}}]})});
+  const f=await fixture(t,3414,async(url,options)=>{
+    if(String(url).endsWith('/models'))return {ok:true,json:async()=>({data:[]})};
+    inputs.push(options.body);
+    return draftWith('http://127.0.0.1:3414',inputs.length===1?{}:{locatorType:'text',target:'Invalid credentials'});
+  });
+  const prompt='Open '+f.base+'/demo, select Get started, and verify the error message Invalid credentials is shown.';
+  const result=await f.api('/api/ai/create','POST',{projectId:f.projectId,prompt});
+  assert.equal(result.status,201,JSON.stringify(result.data));assert.equal(inputs.length,2);
+  assert.ok(!inputs[0].includes('validationFeedback'));assert.match(inputs[1],/Step 3: the model did not provide a locator/);
+  assert.match(inputs[0],/appears only after an action/);
+  const saved=f.studio.store.projects[0].tests.find(item=>item.id===result.data.test.id);
+  assert.equal(saved.steps[2].target,'Invalid credentials');assert.equal(saved.steps[2].locatorType,'text');
+});
+
 test('a model failure is recoverable after reload, releases the lock, and an interrupted job is never restored as busy',{timeout:30000},async t=>{
   let fail=true;
   const f=await fixture(t,3411,async()=>{if(fail)throw new Error('Model unavailable');return reply('http://127.0.0.1:3411');});

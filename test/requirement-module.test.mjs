@@ -81,6 +81,36 @@ test('browser inspection follows navigation, captures constraints and does not s
   const result=await inspectRequirementApp({browser:'chrome'},'http://127.0.0.1:'+site.address().port,{launcher:()=>chromium.launch({channel:'chrome'})});
   assert.equal(result.pages.length,2);assert.ok(result.pages[0].controls.some(c=>c.label==='Email'&&c.required&&c.maxLength==='60'));assert.ok(visited.includes('/help'));assert.ok(!visited.includes('/logout'));assert.equal(writes,0);assert.ok(result.warnings.some(w=>w.includes('Authenticated')));
 });
+async function assetSite(t,handleAsset){
+  const site=http.createServer((req,res)=>{if(req.url.startsWith('/app.js'))return handleAsset(res);res.setHeader('Content-Type','text/html');res.end('<title>Sign in</title><div id="app"></div><script src="/app.js"></script>');});
+  await new Promise(resolve=>site.listen(0,'127.0.0.1',resolve));t.after(()=>{site.closeAllConnections();return new Promise(resolve=>site.close(resolve));});
+  return 'http://127.0.0.1:'+site.address().port;
+}
+const launcher=()=>chromium.launch({channel:'chrome'});
+const renderedForm='setTimeout(()=>{document.getElementById("app").innerHTML="<label>Username<input name=username></label><button>Login</button>";},700);';
+test('browser inspection waits for a client-rendered form after the document is complete',{timeout:45000},async t=>{
+  const url=await assetSite(t,res=>{res.setHeader('Content-Type','text/javascript');res.end(renderedForm);});
+  const result=await inspectRequirementApp({browser:'chrome'},url,{launcher});
+  assert.ok(result.pages[0].controls.some(c=>c.label==='Username'));assert.ok(!result.warnings.some(w=>w.includes('No fields or controls')));
+});
+test('browser inspection retries once when a blocking asset stalls after the server answers',{timeout:45000},async t=>{
+  let requests=0;
+  const url=await assetSite(t,res=>{requests++;if(requests===1)return;res.setHeader('Content-Type','text/javascript');res.end(renderedForm);});
+  const result=await inspectRequirementApp({browser:'chrome'},url,{launcher,contentTimeout:1000});
+  assert.equal(requests,2);assert.ok(result.pages[0].controls.some(c=>c.label==='Username'));
+});
+test('browser inspection reports an unfinished page instead of saying the site cannot be opened',{timeout:45000},async t=>{
+  const url=await assetSite(t,()=>{});
+  const result=await inspectRequirementApp({browser:'chrome'},url,{launcher,contentTimeout:500});
+  assert.equal(result.pages.length,1);assert.equal(result.pages[0].title,'Sign in');assert.equal(result.pages[0].controls.length,0);assert.ok(result.warnings.some(w=>w.includes('No fields or controls')));
+});
+test('browser inspection still fails for an unreachable site or an error response',{timeout:45000},async t=>{
+  const site=http.createServer((req,res)=>{res.statusCode=500;res.end('Server error');});await new Promise(resolve=>site.listen(0,'127.0.0.1',resolve));
+  const port=site.address().port,url='http://127.0.0.1:'+port;
+  await assert.rejects(inspectRequirementApp({browser:'chrome'},url,{launcher}),/Could not inspect.*HTTP 500/);
+  await new Promise(resolve=>site.close(resolve));
+  await assert.rejects(inspectRequirementApp({browser:'chrome'},url,{launcher}),/Could not inspect/);
+});
 test('requirement UI saves an older project, generates, shows required columns and keeps unsaved text during polling',{timeout:45000},async t=>{
   const f=await fixture(t,{aiFetcher:async()=>({ok:true,status:200,json:async()=>({done:true,done_reason:'stop',message:{content:JSON.stringify(draft)}})})});delete f.project.requirements;
   const browser=await chromium.launch({channel:'chrome'});t.after(()=>browser.close());const page=await browser.newPage();const errors=[];page.on('pageerror',error=>errors.push(error.message));

@@ -102,13 +102,17 @@ function requirementRow(requirement) {
   </tr>`;
 }
 
+function relatedDocumentButton() {
+  return button('related-documents', 'Related Document', 'upload');
+}
+
 function requirementsView() {
   const requirements = project().requirements || [];
   const addButton = button('new-requirement', 'Add requirement', 'plus', '', 'primary');
   const pageHeading = heading(
     'Requirement',
     'Describe a workflow and generate test cases from its acceptance criteria and application pages.',
-    addButton,
+    relatedDocumentButton() + addButton,
   );
   if (!requirements.length) {
     return (
@@ -571,7 +575,7 @@ function requirementForm(id) {
     : '';
 
   return `<a class="back-link" href="#requirements">${icon('back')}Back to requirements</a>
-    ${heading(saved ? 'Requirement' : 'Add requirement', 'Add the starting URL and describe the workflow, rules, and expected outcomes.', deleteButton)}
+    ${heading(saved ? 'Requirement' : 'Add requirement', 'Add the starting URL and describe the workflow, rules, and expected outcomes.', relatedDocumentButton() + deleteButton)}
     <form id="requirement-form" class="panel requirement-form" data-project-id="${e(current.id)}" data-requirement-id="${e(id || '')}">
       <fieldset ${isBusy ? 'disabled' : ''}>
         <div class="form-grid">

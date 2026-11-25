@@ -35,8 +35,36 @@ test('Groq keeps provider keys separate and supports switching back',()=>{
   assert.equal(normalizeIntegrationSettings({clearApiKey:true},groq).apiKey,'');
   assert.doesNotMatch(JSON.stringify(publicSettings(groq)),/secret|apiKeys/);
 });
+test('NVIDIA drafts through its chat completions API and extracts fenced JSON',async()=>{
+  const settings=normalizeIntegrationSettings({provider:'nvidia',apiKey:'nvapi-test-secret'});
+  assert.equal(settings.model,'meta/muse-glimmer-30b');
+  const reply=`<think>planning</think>Here is the draft:\n\`\`\`json\n${JSON.stringify(groqDraft)}\n\`\`\``;
+  const draft=await draftTest(settings,groqProject,'Open BASE_URL',async(url,options)=>{
+    assert.equal(url,'https://integrate.api.nvidia.com/v1/chat/completions');
+    assert.equal(options.headers.Authorization,'Bearer nvapi-test-secret');
+    const body=JSON.parse(options.body);
+    assert.equal(body.model,'meta/muse-glimmer-30b');
+    assert.equal(body.max_tokens,8192);
+    assert.equal(body.response_format,undefined);
+    assert.match(body.messages[0].content,/Return JSON matching this schema/);
+    assert.doesNotMatch(options.body,/private-password|private-url|nvapi-test-secret/);
+    return groqResponse({role:'assistant',content:reply});
+  });
+  assert.equal(draft.name,'Login');
+  assert.equal(draft.steps[0].value,'BASE_URL');
+  await assert.rejects(draftTest(settings,groqProject,'Open',async()=>({ok:false,status:401,json:async()=>({detail:'Unauthorized'})})),/NVIDIA API key is invalid/);
+});
+test('NVIDIA retries one empty gateway response, then reports it clearly',async()=>{
+  const settings=normalizeIntegrationSettings({provider:'nvidia',apiKey:'nvapi-test-secret'});
+  const empty=()=>({ok:false,status:504,json:async()=>JSON.parse('')});
+  let calls=0;
+  const draft=await draftTest(settings,groqProject,'Open BASE_URL',async()=>(++calls===1?empty():groqResponse()));
+  assert.equal(calls,2);
+  assert.equal(draft.name,'Login');
+  await assert.rejects(draftTest(settings,groqProject,'Open',async()=>empty()),/NVIDIA returned an empty or unreadable response \(HTTP 504\) twice/);
+});
 
-const malformedGroqCall = () => ({ok:false,status:400,json:async()=>({error:{code:'tool_use_failed',message:'Failed to parse tool call arguments as JSON',failed_generation:'DO_NOT_EXECUTE_OR_REPLAY'}})});
+const malformedGroqCall =() => ({ok:false,status:400,json:async()=>({error:{code:'tool_use_failed',message:'Failed to parse tool call arguments as JSON',failed_generation:'DO_NOT_EXECUTE_OR_REPLAY'}})});
 const propertyPrompt = 'Open https://brosapp.ebita.ai/\nEnter kakkanad in search field\nAnd click search\nVerify 3 BHK Villa for Sale in Kakkanad is displayed in the result page\nOpen the details screen of the 3 BHK Villa for Sale in Kakkanad by clicking the View Details button\nVerify the property name is shown as 3 BHK Villa for Sale in Kakkanad';
 
 test('Groq recovers provider tool parsing errors even when no tools were requested',async()=>{

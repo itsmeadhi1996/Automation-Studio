@@ -84,8 +84,10 @@ const VIEW_NAMES = {
   settings: 'Settings & connections',
   mcp: 'MCP servers',
   prerequisites: 'Prequenties',
+  processes: 'Process automation',
 };
-const VIEWS_WITHOUT_TABS = ['prerequisites', 'objects', 'database', 'variables', 'mcp'];
+const VIEWS_WITHOUT_TABS = ['prerequisites', 'processes', 'objects', 'database', 'variables', 'mcp'];
+const MAX_PROCESS_RUNS = 1000;
 const LINKABLE_VIEWS = ['cases', 'editor', 'suites', 'history', 'execution', 'ai', 'settings', 'mcp'];
 const SETTINGS_VIEWS = ['settings', 'ai', 'mcp'];
 const URL_TRACKED_VIEWS = ['ai', 'execution', 'cases'];
@@ -143,6 +145,13 @@ const PROVIDERS = {
     keyPlaceholder: 'gsk_…',
     defaultModel: 'openai/gpt-oss-20b',
   },
+  nvidia: {
+    short: 'NVIDIA',
+    title: 'NVIDIA API Catalog',
+    keyLabel: 'NVIDIA API key',
+    keyPlaceholder: 'nvapi-…',
+    defaultModel: 'meta/muse-glimmer-30b',
+  },
   reasonx: {
     short: 'ReasonX',
     title: 'ReasonX - Local model',
@@ -155,6 +164,7 @@ const PROVIDER_CHOICES = [
   { id: 'google', name: 'Google AI Studio · Gemini free tier' },
   { id: 'openai', name: 'OpenAI' },
   { id: 'groq', name: 'Groq' },
+  { id: 'nvidia', name: 'NVIDIA API Catalog' },
   { id: 'reasonx', name: 'ReasonX - Local model' },
 ];
 // Used until the server's settings load, and whenever they cannot be loaded.
@@ -188,6 +198,7 @@ let activeFolderId = null;
 let lastRunSignature = '';
 let startingDebug = false;
 let stoppingDebug = false;
+let steppingDebug = false;
 let editorPage = 0;
 let editorSize = 10;
 let editorKey;
@@ -200,6 +211,8 @@ const openRepositoryCases = new Set();
 /* AI Assistance */
 let aiPrompt = '';
 let aiTargetId = null;
+// Index of the first step Auto generator replaces; earlier steps are kept. 0 replaces every step.
+let aiRegenerateFrom = 0;
 let aiEngine = null;
 let aiStatus = null;
 let aiStatusBusy = false;
@@ -304,6 +317,7 @@ function empty(title, message, action = '') {
 }
 
 function modal(title, html, handler, submitLabel = 'Save') {
+  $('#dialog').classList.remove('issue-dialog');
   $('#dialog-title').textContent = title;
   $('#dialog-body').innerHTML = html;
   $('#dialog-submit').textContent = submitLabel;
@@ -347,6 +361,7 @@ async function api(route, method = 'GET', body) {
     const error = new Error(result.error || 'Request failed');
     error.code = result.code;
     error.status = response.status;
+    error.issues = result.issues;
     throw error;
   }
   return result;
@@ -377,6 +392,9 @@ function updateStatus() {
   const stop = $('#stop-debug-button');
   stop.hidden = !startingDebug && !state?.activeDebug;
   stop.disabled = startingDebug || stoppingDebug;
+  document.querySelectorAll('[data-action="debug-step"]').forEach((button) => {
+    button.disabled = steppingDebug || stoppingDebug;
+  });
 }
 
 async function save() {
@@ -532,6 +550,8 @@ function refreshHistoryPanel() {
   renderExecution();
   const status = $('#selected-case-status');
   if (status) status.innerHTML = badge(caseRuns()[0]?.status);
+  const bug = $('#selected-case-bug');
+  if (bug) bug.innerHTML = bugControls(caseRuns()[0]);
 }
 
 async function loadCaseHistory() {
@@ -586,12 +606,12 @@ function renderBreadcrumbs() {
   const test = selected();
   const names = {
     ...VIEW_NAMES,
-    editor: selectedKind === 'prerequisites' ? 'Prequenties' : 'Test cases',
+    editor: { prerequisites: 'Prequenties', processes: 'Process automation' }[selectedKind] || 'Test cases',
     ai: aiTargetId ? 'Auto generator' : 'AI Assistance',
   };
   const itemTrail =
     view === 'editor' && test
-      ? `<span> / </span><span>${selectedKind === 'tests' ? tc(test) : 'Prerequisite'}</span>`
+      ? `<span> / </span><span>${selectedKind === 'tests' ? tc(test) : selectedKind === 'processes' ? 'Process' : 'Prerequisite'}</span>`
       : '';
   $('#breadcrumbs').innerHTML = `▧ <span>${esc(project.name)}</span><span> / </span><strong>${esc(names[view])}</strong>${itemTrail}`;
 }
@@ -625,6 +645,7 @@ function renderExplorer() {
       </div>
     </section>
     ${explorerItem('history', 'Run history', '')}
+    ${explorerItem('processes', 'Process automation', project.processes.length)}
     ${explorerItem('prerequisites', 'Prequenties', project.prerequisites.length)}
     ${explorerItem('objects', 'Object repository', project.objects.length)}
     ${explorerItem('database', 'PostgreSQL', project.jdbcProfiles.length)}
@@ -679,6 +700,7 @@ function renderMainContent() {
     recording: renderRecording,
     debug: renderDebug,
     prerequisites: renderPrerequisites,
+    processes: renderProcesses,
     objects: renderObjects,
     variables: renderVariables,
     database: renderDatabase,
@@ -840,9 +862,10 @@ function recordingControls(recording, isStopped) {
       <button class="primary" data-action="record-stop">Stop and review</button>`;
   }
   const disabled = recordMappingBusy ? 'disabled' : '';
+  const owner = recording.kind === 'process' ? 'process' : 'test';
   return `
-    <button class="primary" data-action="record-import" data-mode="replace" ${disabled}>Replace test steps</button>
-    <button data-action="record-import" data-mode="append" ${disabled}>Append to test</button>`;
+    <button class="primary" data-action="record-import" data-mode="replace" ${disabled}>Replace ${owner} steps</button>
+    <button data-action="record-import" data-mode="append" ${disabled}>Append to ${owner}</button>`;
 }
 
 function renderRecording() {
@@ -860,9 +883,11 @@ function renderRecording() {
     { id: 'text', name: 'Verify text' },
     { id: 'value', name: 'Verify field value' },
   ];
-  const hint = requirements.length
+  const isProcess = recording.kind === 'process';
+  let hint = requirements.length
     ? 'Step names include the element label or text and its type. Matching QA Studio requirements are added automatically. After Stop and review, you can adjust the requirement mappings. Several actions can use the same requirement.'
     : 'Step names include the element label or text and its type. Add test instructions in QA Studio to enable automatic requirement naming.';
+  if (isProcess) hint = 'Every interaction becomes a step of this process. Stop and save it, then choose how many times to run it.';
   const requirementsHref = `/?projectId=${encodeURIComponent(recording.projectId)}#case/${encodeURIComponent(linked?.qaCaseId || recording.testId)}`;
   const subtitle = `${recording.browser} · ${recording.status} · ${recording.steps.length} steps`;
   const rows = recording.steps
@@ -876,7 +901,7 @@ function renderRecording() {
         <p>Interact with the visible browser. Each interaction is saved automatically. Frames, new tabs, open shadow DOM and multiple selections are supported. File uploads require a local-path variable.</p>
         <p>Choose a verification mode and click an element: a red outline marks the target and a message confirms the saved capture. A screenshot shows the highlighted target and its position on the page.</p>
         <label>Recording mode<select id="record-mode" ${isStopped ? 'disabled' : ''}>${options(modes, recording.mode || 'actions')}</select></label>
-        <p class="recorder-map-hint">${hint} <a href="${requirementsHref}" target="_blank" rel="noopener">View QA Studio requirements</a></p>
+        <p class="recorder-map-hint">${hint} ${isProcess ? '' : `<a href="${requirementsHref}" target="_blank" rel="noopener">View QA Studio requirements</a>`}</p>
         <div class="inline-actions">
           ${recordingControls(recording, isStopped)}
           <button data-action="record-discard" ${recordMappingBusy ? 'disabled' : ''}>Discard recording</button>
@@ -1105,13 +1130,21 @@ function stepRowActions(step, index, hasNoTarget, test) {
   const saveObject = canSaveObject
     ? `<button data-action="save-step-object" data-index="${index}" title="Save locator to repository" aria-label="Save step ${number} locator to repository">▤</button>`
     : '';
+  // Step 1 opens the page, so regenerating from it is the same as Auto generator replacing every step.
+  const canRegenerateFrom = index > 0 && selectedKind === 'tests' && Boolean(test.qa?.manualSteps?.length);
   return `
     ${saveObject}
+    ${canRegenerateFrom ? `<button data-action="regenerate-from-step" data-index="${index}" title="Regenerate from step ${number}" aria-label="Regenerate steps from step ${number}" ${generating ? 'disabled' : ''}>↻</button>` : ''}
     <button data-action="move-step" data-index="${index}" data-direction="-1" title="Move step ${number} up" aria-label="Move step ${number} up" ${index === 0 ? 'disabled' : ''}>↑</button>
     <button data-action="move-step" data-index="${index}" data-direction="1" title="Move step ${number} down" aria-label="Move step ${number} down" ${index === test.steps.length - 1 ? 'disabled' : ''}>↓</button>
     <button data-action="step-options" data-index="${index}" title="Step settings" aria-label="Step ${number} settings">⚙</button>
     <button data-action="duplicate-step" data-index="${index}" title="Duplicate step ${number}" aria-label="Duplicate step ${number}">⧉</button>
     <button data-action="remove-step" data-index="${index}" title="Remove step ${number}" aria-label="Remove step ${number}">×</button>`;
+}
+
+function stepRepeatToggle(step, index) {
+  if (selectedKind !== 'processes') return '';
+  return `<label class="repeat-toggle"><input type="checkbox" data-step-repeat data-index="${index}" ${step.repeat ? 'checked' : ''} aria-label="Repeat step ${index + 1}"> Repeat</label>`;
 }
 
 function renderStep(step, index, test) {
@@ -1120,12 +1153,13 @@ function renderStep(step, index, test) {
   const actionChoices = Object.entries(ACTION_LABELS).map(([id, name]) => ({ id, name }));
   const locatorChoices = Object.entries(LOCATOR_LABELS).map(([id, name]) => ({ id, name }));
   return `
-    <tr data-row="${index}">
+    <tr data-row="${index}" class="${selectedKind === 'processes' && step.repeat ? 'repeat-step' : ''}">
       <td class="drag" draggable="true" data-drag-step="${index}" title="Drag to reorder">⠿</td>
       <td class="num">${pad2(index + 1)}</td>
       <td class="step-name">
         <input ${stepAttributes(index, 'name')} value="${esc(step.name)}" title="${esc(step.name)}" maxlength="10000" ${step.qaRequirementId ? 'readonly' : ''}>
         ${stepRequirementSelect(step, index, test)}
+        ${stepRepeatToggle(step, index)}
         ${renderCapturedScreenshot(step)}
       </td>
       <td class="step-action"><select ${stepAttributes(index, 'action')}>${options(actionChoices, step.action)}</select></td>
@@ -1137,11 +1171,23 @@ function renderStep(step, index, test) {
     </tr>`;
 }
 
+function bugControls(latest) {
+  const test = selected();
+  if (!test) return '';
+  return StudioIssueReport.controls({
+    projectId: project.id,
+    testIds: [test.id, test.qaCaseId, historyCaseId()],
+    runId: latest?.id,
+    statuses: latest ? [latest.status, ...latest.tests.map((item) => item.status)] : [],
+  });
+}
+
 function renderEditorActions(isPrerequisite, latest) {
   const testActions = isPrerequisite
     ? ''
     : `
       <span id="selected-case-status">${badge(latest?.status)}</span>
+      <span id="selected-case-bug" class="issue-controls">${bugControls(latest)}</span>
       <button class="quiet" data-action="preflight">Check readiness</button>
       <button class="quiet" data-action="local-test-data">Local Test Data</button>
       <button class="quiet" data-action="test-options">Test options</button>
@@ -1153,6 +1199,29 @@ function renderEditorActions(isPrerequisite, latest) {
     ${testActions}
     <button class="quiet" data-action="duplicate-test" title="Duplicate">Duplicate</button>
     <button class="quiet danger" data-action="delete-test" title="Delete">Delete</button>`;
+}
+
+function renderProcessActions(item) {
+  return `
+    ${processRunButton(item)}
+    <button class="quiet" data-action="record-web">Record Web</button>
+    <button class="quiet" data-action="duplicate-test" title="Duplicate">Duplicate</button>
+    <button class="quiet danger" data-action="delete-test" title="Delete">Delete</button>`;
+}
+
+function renderProcessDetails(item) {
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Process details <span class="count">PROCESS</span></h2>
+        <span class="subtitle">${item.steps.length} steps</span>
+      </div>
+      <div class="test-meta">
+        <label>Process name<input data-meta="name" aria-label="Process name" value="${esc(item.name)}" maxlength="120"></label>
+        ${processRunInput(item, 'Number of runs')}
+      </div>
+      ${repeatSummary(item)}
+    </section>`;
 }
 
 function renderTestDetails(test, isPrerequisite) {
@@ -1223,15 +1292,19 @@ function renderEditor() {
     );
   }
   const isPrerequisite = selectedKind === 'prerequisites';
+  const isProcess = selectedKind === 'processes';
   const latest = selectedKind === 'tests' ? caseRuns()[0] : null;
-  const subtitle = isPrerequisite
-    ? 'These steps run before linked tests, in the same browser session.'
-    : 'Configure automation steps, then run this test.';
+  let subtitle = 'Configure automation steps, then run this test.';
+  if (isPrerequisite) subtitle = 'These steps run before linked tests, in the same browser session.';
+  if (isProcess) subtitle = 'Record or edit the process steps, set the run count, then run it.';
+  let eyebrow = 'TEST WORKSPACE';
+  if (isPrerequisite) eyebrow = 'REUSABLE SETUP';
+  if (isProcess) eyebrow = 'PROCESS AUTOMATION';
   const localNames = (test.localTestData || []).map((entry) => `<option value="${esc(entry.name)}"></option>`).join('');
   return `
     ${renderQaContext(test)}
-    ${heading(isPrerequisite ? 'REUSABLE SETUP' : 'TEST WORKSPACE', test.name, subtitle, renderEditorActions(isPrerequisite, latest))}
-    ${renderTestDetails(test, isPrerequisite)}
+    ${heading(eyebrow, test.name, subtitle, isProcess ? renderProcessActions(test) : renderEditorActions(isPrerequisite, latest))}
+    ${isProcess ? renderProcessDetails(test) : renderTestDetails(test, isPrerequisite)}
     ${renderStepsPanel(test)}
     <datalist id="local-variable-names">${localNames}</datalist>
     <details class="quick-start">
@@ -1280,6 +1353,7 @@ function renderExecution() {
           <h3>${title}</h3>
           <p>${esc(detail)}</p>
         </div>
+        ${selectedKind === 'tests' ? `<span class="issue-controls">${bugControls(latest)}</span>` : ''}
         ${action}
       </div>
     </section>`;
@@ -1339,6 +1413,88 @@ function updateSuiteRunButtons() {
   document.querySelectorAll('[data-action="execute-suite"]').forEach((button) => {
     button.disabled = Boolean(state.activeRun || state.activeDebug) || !suiteMembers(button.dataset.id).length;
   });
+}
+
+// The marked Repeat block of a process: null when nothing is marked, or { first, last, isSplit }.
+function repeatBlock(item) {
+  const marked = item.steps.flatMap((step, index) => (step.repeat ? [index] : []));
+  if (!marked.length) return null;
+  const first = marked[0];
+  const last = marked.at(-1);
+  return { first, last, isSplit: last - first + 1 !== marked.length };
+}
+
+function stepRange(first, last) {
+  return first === last ? `step ${first + 1}` : `steps ${first + 1}–${last + 1}`;
+}
+
+function repeatSummary(item) {
+  const block = repeatBlock(item);
+  const count = item.runCount || 1;
+  const times = `${count} ${count === 1 ? 'time' : 'times'}`;
+  if (!block) return `<p class="form-hint process-hint">No steps are marked Repeat, so the whole process runs ${times}, each in a fresh browser session. Tick Repeat on the steps that should run again and again.</p>`;
+  if (block.isSplit) {
+    return `<p class="notice error process-hint" role="alert">Steps marked Repeat must be next to each other. Mark every step from ${block.first + 1} to ${block.last + 1}, or untick the ones outside the block you want to repeat.</p>`;
+  }
+  const before = block.first ? `${stepRange(0, block.first - 1)} ${block.first === 1 ? 'runs' : 'run'} once first, then ` : '';
+  const afterCount = item.steps.length - block.last - 1;
+  const after = afterCount
+    ? `, then ${stepRange(block.last + 1, item.steps.length - 1)} ${afterCount === 1 ? 'runs' : 'run'} once at the end`
+    : '';
+  const plan = `${before}${stepRange(block.first, block.last)} ${block.first === block.last ? 'repeats' : 'repeat'} ${times}${after}`;
+  return `<p class="form-hint process-hint">${esc(plan[0].toUpperCase() + plan.slice(1))}. Everything runs in one browser session. If a step fails, the remaining steps are skipped.</p>`;
+}
+
+function processRunInput(item, label = 'Run count') {
+  return `<label class="process-runs">${label}<input type="number" min="1" max="${MAX_PROCESS_RUNS}" step="1" value="${item.runCount || 1}" data-process-runs data-id="${esc(item.id)}" aria-label="Number of times to run ${esc(item.name)}"></label>`;
+}
+
+function processRunButton(item) {
+  const isBusy = Boolean(state.activeRun || state.activeDebug || recordingLive());
+  const count = item.runCount || 1;
+  const block = repeatBlock(item);
+  const label = block && !block.isSplit
+    ? `Run, repeating ${stepRange(block.first, block.last)} × ${count}`
+    : `Run ${count} ${count === 1 ? 'time' : 'times'}`;
+  return `<button class="primary" data-action="run-process" data-id="${esc(item.id)}" ${isBusy || !item.steps.length || block?.isSplit ? 'disabled' : ''}>${label}</button>`;
+}
+
+// Run buttons follow the active run, debug session and recording without redrawing the page.
+function updateProcessRunButtons() {
+  for (const button of document.querySelectorAll('[data-action="run-process"]')) {
+    const item = project.processes.find((candidate) => candidate.id === button.dataset.id);
+    if (!item) continue;
+    const isBusy = Boolean(state.activeRun || state.activeDebug || recordingLive());
+    button.disabled = isBusy || !item.steps.length || Boolean(repeatBlock(item)?.isSplit);
+  }
+}
+
+function renderProcesses() {
+  const cards = project.processes
+    .map(
+      (item) => `
+        <article class="resource-card process-card">
+          <h3>${esc(item.name)}</h3>
+          <p>${item.steps.length ? `${item.steps.length} steps` : 'No steps yet. Record the process to capture it.'}</p>
+          ${item.steps.length ? repeatSummary(item) : ''}
+          ${processRunInput(item)}
+          <div class="inline-actions">
+            ${processRunButton(item)}
+            <button data-action="record-process" data-id="${esc(item.id)}" ${recordingLive() ? 'disabled' : ''}>Record</button>
+            <button data-action="edit-process" data-id="${esc(item.id)}">Edit steps →</button>
+          </div>
+        </article>`,
+    )
+    .join('');
+  return `
+    ${heading(
+      'RECORD ONCE. RUN MANY TIMES.',
+      'Process automation',
+      'Record a business process in the browser, then replay it as many times as you need.',
+      '<button class="primary" data-action="new-process">New process</button>',
+    )}
+    <div class="cards-grid">${cards}</div>
+    ${project.processes.length ? '' : empty('Automate a repetitive process', 'Create a process, record the flow once in the browser, and set how many times it should run. Each run uses a fresh browser session and appears in Run history.')}`;
 }
 
 function renderPrerequisites() {
@@ -1460,7 +1616,7 @@ function renderVariables() {
       </article>
       ${project.environments.map(renderEnvironmentCard).join('')}
     </div>
-    <p class="form-hint">Variable values are stored locally in plain text. AI drafting receives variable names, not values.</p>`;
+    <p class="form-hint">Variable values are stored encrypted on this computer. AI drafting receives variable names, not values.</p>`;
 }
 
 function renderProfileCard(profile) {
@@ -1521,6 +1677,9 @@ function providerHelp() {
   }
   if (settings.provider === 'groq') {
     return `Create a key in ${link('https://console.groq.com/keys', 'Groq Console')}. Use openai/gpt-oss-20b for structured test drafts. Keys stay on the local server; set GROQ_API_KEY to keep the key out of the local JSON store.`;
+  }
+  if (settings.provider === 'nvidia') {
+    return `Create a key in ${link('https://build.nvidia.com', 'NVIDIA API Catalog ↗')}. The default model is meta/muse-glimmer-30b; any chat model from the catalog works. The hosted catalog queues requests, so a draft can take several minutes. AI Assistance only: requirement generation needs another provider. Keys stay on the local server; set NVIDIA_API_KEY to keep the key out of the local JSON store.`;
   }
   return 'Your key is used by the local server and is never returned to the browser. Set OPENAI_API_KEY before starting the server to keep it out of the local JSON store.';
 }
@@ -1590,14 +1749,14 @@ function renderBugTracking() {
   const config = settings.bugTracker || {};
   const tokenExtras = `autocomplete="new-password" maxlength="4000" ${config.hasApiKey ? '' : 'required'} placeholder="${config.hasApiKey ? 'Saved token — leave blank to keep' : 'Paste API token'}"`;
   const verified = config.connected
-    ? `<p class="form-hint">Verified ${esc(config.projectName)} as ${esc(config.accountName)} on ${esc(new Date(config.verifiedAt).toLocaleString())}. Report issue is available in test case details.</p>`
+    ? `<p class="form-hint">Verified ${esc(config.projectName)} as ${esc(config.accountName)} on ${esc(new Date(config.verifiedAt).toLocaleString())}. Report issue is available in QA test case details, and Raise bug in the test editor and Run history.</p>`
     : '';
   return `
     <section class="panel bug-tracking-panel">
       <div class="panel-head">
         <div>
           <h2>Bug tracking configuration</h2>
-          <p class="subtitle">Connect Jira Cloud to report issues from test case details.</p>
+          <p class="subtitle">Connect Jira Cloud to report issues from QA test case details, the test editor and Run history.</p>
         </div>
         <span class="badge" id="jira-connection-status">${config.connected ? 'Connected' : 'Not connected'}</span>
       </div>
@@ -2015,6 +2174,7 @@ async function generateAutomation() {
     engine: aiEngineChoice(),
     mcpServerIds: selectedSafeMcpIds(),
     ...(aiTargetId ? { testId: aiTargetId } : {}),
+    ...(aiTargetId && regenerateFromStep() ? { regenerateFrom: regenerateFromStep() } : {}),
   };
   // Claim the click before saving: a second click must not start a second request.
   pendingGenerations.set(projectId, Date.now());
@@ -2025,6 +2185,7 @@ async function generateAutomation() {
   try {
     await save();
     const result = await api('/api/ai/create', 'POST', { ...request, agentOptions: project.agentOptions });
+    aiRegenerateFrom = 0;
     if (result.preview) {
       state.agentDrafts = [...(state.agentDrafts || []).filter((item) => item.projectId !== projectId), result.preview];
       await reconnectGeneration(projectId);
@@ -2041,7 +2202,10 @@ async function generateAutomation() {
     await reconnectGeneration(projectId);
     notify('Automation saved. Review it, then use Run test.');
   } catch (error) {
-    if (!(await recoverFromGenerationFailure(error, projectId))) throw error;
+    if (await recoverFromGenerationFailure(error, projectId)) return;
+    // Show the failure in the alert window, then refresh so the saved job error appears inline.
+    await reconnectGeneration(projectId).catch(() => null);
+    showGenerationIssues(error.message, error.issues);
   } finally {
     pendingGenerations.delete(projectId);
     render();
@@ -2172,6 +2336,37 @@ function renderAiProgress() {
     </div>`;
 }
 
+function issueItem(issue) {
+  const rows = [
+    ['Expected', issue.expected],
+    ['Found', issue.found],
+    ['What to do', issue.fix],
+  ].filter(([, value]) => value);
+  const title = issue.step ? `Step ${issue.step}: ${issue.problem}` : issue.problem;
+  return `
+    <li class="issue-item">
+      <strong>${esc(title)}</strong>
+      ${rows.length ? `<dl>${rows.map(([name, value]) => `<dt>${name}</dt><dd>${esc(value)}</dd>`).join('')}</dl>` : ''}
+    </li>`;
+}
+
+// A small alert window listing each generation problem in plain language.
+function showGenerationIssues(message, issues) {
+  // Errors without details (provider failures, older servers) split into the problem and the advice that follows it.
+  const [problem, ...advice] = String(message).split(/(?<=\.)\s+/);
+  const list = issues?.length ? issues : [{ problem, fix: advice.join(' ') }];
+  const count = list.length === 1 ? '1 problem' : `${list.length} problems`;
+  modal(
+    'Generation stopped',
+    `
+      <p class="issue-summary">Studio found ${count}. No new automation steps were saved.</p>
+      <ol class="issue-list">${list.map(issueItem).join('')}</ol>`,
+    () => {},
+    'Close',
+  );
+  $('#dialog').classList.add('issue-dialog');
+}
+
 function renderGenerationError() {
   if (aiMissingRouteError) {
     return `<p class="notice error" role="alert">Generation is not available on this server: ${esc(aiMissingRouteError)}</p>`;
@@ -2179,7 +2374,10 @@ function renderGenerationError() {
   const job = currentGeneration();
   const hasFailed = ['failed', 'interrupted', 'cancelled'].includes(job?.status);
   if (pendingGenerations.has(project?.id) || !hasFailed) return '';
-  return `<p class="notice error" role="alert">${esc(job.error)} No new automation steps were saved by this attempt.</p>`;
+  return `
+    <p class="notice error" role="alert">${esc(job.error)} No new automation steps were saved by this attempt.
+      <button type="button" class="mini-link" data-action="generation-details">View details</button>
+    </p>`;
 }
 
 function aiEngineInfo(studioName) {
@@ -2272,11 +2470,34 @@ function aiNotices(engine) {
   return notices.join('');
 }
 
+// The kept-step count, or 0 when the selected step no longer exists in the target case.
+function regenerateFromStep() {
+  const steps = project.tests.find((test) => test.id === aiTargetId)?.steps || [];
+  return aiRegenerateFrom > 0 && aiRegenerateFrom < steps.length ? aiRegenerateFrom : 0;
+}
+
+function renderRegenerateFrom() {
+  const steps = project.tests.find((test) => test.id === aiTargetId)?.steps || [];
+  if (steps.length < 2) return '';
+  const choices = steps
+    .slice(1)
+    .map((step, offset) => ({ id: String(offset + 1), name: `Step ${offset + 2}: ${step.name || ACTION_LABELS[step.action] || step.action}` }));
+  return `
+    <label for="ai-regenerate-from">Regenerate from</label>
+    <select id="ai-regenerate-from">
+      ${options([{ id: '0', name: 'All steps' }, ...choices], String(regenerateFromStep()))}
+    </select>`;
+}
+
 function renderAiComposer(engine, studioName) {
+  const keptCount = aiTargetId ? regenerateFromStep() : 0;
   let scopeHint = 'Creates a new test case.';
   if (project.agentOptions?.enabled && !engine.isCloud) scopeHint = 'Creates a draft for review before applying changes.';
+  else if (keptCount) scopeHint = `Keeps steps 1–${keptCount} and replaces step ${keptCount + 1} onward. Requirements and case number are preserved.`;
   else if (aiTargetId) scopeHint = 'Replaces the automation steps in this case. Requirements and case number are preserved.';
-  const generateLabel = generating ? 'Inspecting and creating…' : aiTargetId ? 'Generate steps' : 'Generate test';
+  let generateLabel = aiTargetId ? 'Generate steps' : 'Generate test';
+  if (keptCount) generateLabel = `Regenerate from step ${keptCount + 1}`;
+  if (generating) generateLabel = 'Inspecting and creating…';
   return `
     <section class="panel">
       <div class="panel-head">
@@ -2286,6 +2507,7 @@ function renderAiComposer(engine, studioName) {
       <div class="panel-body">
         ${renderAiEngine(engine, studioName)}
         ${engine.isCloud ? '' : renderAgentOptions()}
+        ${aiTargetId ? renderRegenerateFrom() : ''}
         <label for="ai-prompt">Workflow description</label>
         <textarea id="ai-prompt" class="ai-prompt" placeholder="Open https://my-app.com/login. Enter a username and password, click Sign in, and verify that the Dashboard heading is visible." maxlength="${MAX_PROMPT_LENGTH}">${esc(aiPrompt)}</textarea>
         <div class="prompt-examples">
@@ -2436,7 +2658,7 @@ function editNamed(kind, title, extra = {}) {
       project[kind].push(item);
       markDirty();
 
-      if (isTest || kind === 'prerequisites') {
+      if (isTest || kind === 'prerequisites' || kind === 'processes') {
         selectedId = item.id;
         selectedKind = kind;
         view = 'editor';
@@ -2803,9 +3025,18 @@ async function deleteTestCase(source) {
   if (draft?.id === source.id) {
     draft = null;
     aiTargetId = null;
+    aiRegenerateFrom = 0;
   }
   render();
   notify('Automation case deleted. The QA Studio case and run history are preserved.');
+}
+
+function deleteProcess(item) {
+  project.processes = project.processes.filter((other) => other.id !== item.id);
+  selectedId = null;
+  selectedKind = 'tests';
+  markDirty();
+  navigate('processes');
 }
 
 function deletePrerequisite(item) {
@@ -2848,8 +3079,9 @@ function openProject(next) {
 
 function importRecordingSteps(recording, mode) {
   if (project.id !== recording.projectId) throw new Error('Switch to the recording project before importing.');
-  const target = project.tests.find((test) => test.id === recording.testId);
-  if (!target) throw new Error('The recorded test was deleted.');
+  const isProcess = recording.kind === 'process';
+  const target = (isProcess ? project.processes : project.tests).find((item) => item.id === recording.testId);
+  if (!target) throw new Error(isProcess ? 'The recorded process was deleted.' : 'The recorded test was deleted.');
   const isAppend = mode === 'append';
   const steps = isAppend ? [...target.steps, ...recording.steps] : recording.steps;
   if (steps.length > MAX_RECORDED_STEPS) {
@@ -2857,12 +3089,13 @@ function importRecordingSteps(recording, mode) {
   }
   const previousCount = target.steps.length;
   target.steps = structuredClone(steps);
-  for (const step of target.steps.slice(isAppend ? previousCount : 0)) {
+  // Process steps keep their recorded locators; the object repository belongs to test cases.
+  for (const step of isProcess ? [] : target.steps.slice(isAppend ? previousCount : 0)) {
     if (!['css', 'xpath'].includes(step.locatorType) || !step.target) continue;
     StudioLocators.saveStepObject(project, StudioLocators.caseId(target), step, uid);
   }
   selectedId = target.id;
-  selectedKind = 'tests';
+  selectedKind = isProcess ? 'processes' : 'tests';
   markDirty();
 }
 
@@ -2919,10 +3152,19 @@ async function closeDebug() {
 }
 
 async function stepDebug() {
+  // The server runs one step at a time, so a second click while a step runs only fails.
+  if (steppingDebug || stoppingDebug) return;
   const session = state.activeDebug;
   if (!session) throw new Error('No active debug session.');
-  await api(`/api/debug/${session.id}/step`, 'POST', {});
-  await refreshRuns();
+  steppingDebug = true;
+  updateStatus();
+  try {
+    await api(`/api/debug/${session.id}/step`, 'POST', {});
+    await refreshRuns();
+  } finally {
+    steppingDebug = false;
+    updateStatus();
+  }
   if (state.activeDebug?.status === 'failed') {
     notify('Step failed. Inspect the browser, screenshot, and error.', true);
   } else if (state.activeDebug?.status === 'passed') {
@@ -3026,6 +3268,10 @@ function promptExamples() {
 
 const ACTIONS = {
   'close-dialog': () => $('#dialog').close(),
+  'generation-details': () => {
+    const job = currentGeneration();
+    showGenerationIssues(job?.error || 'Generation failed. Try again.', job?.issues);
+  },
   view: async ({ button }) => {
     const next = button.dataset.view;
     if (next === 'history') {
@@ -3257,6 +3503,25 @@ const ACTIONS = {
   'new-folder': ({ button }) => editNamed('folders', 'New folder', { parentId: button.dataset.folder || null }),
   'new-suite': () => editNamed('suites', 'New suite'),
   'new-prerequisite': () => editNamed('prerequisites', 'New prerequisite', { steps: [] }),
+  'new-process': () => editNamed('processes', 'New process', { steps: [], runCount: 1 }),
+  'edit-process': ({ id }) => {
+    selectedId = id;
+    selectedKind = 'processes';
+    navigate('editor');
+  },
+  'record-process': async ({ id }) => {
+    if (state.activeRecording) {
+      navigate('recording');
+      return;
+    }
+    await save();
+    openRecordWeb(project.processes.find((item) => item.id === id));
+  },
+  'run-process': ({ id }) => {
+    const item = project.processes.find((candidate) => candidate.id === id);
+    if (!item?.steps.length) throw new Error('Record or add steps to this process before running it.');
+    return run({ processId: item.id, runCount: item.runCount || 1 });
+  },
   'record-web': async ({ test }) => {
     if (state.activeRecording) {
       navigate('recording');
@@ -3293,12 +3558,13 @@ const ACTIONS = {
     await api(`/api/recordings/${recording.id}/discard`, 'POST', {});
     state.activeRecording = null;
     navigate('editor');
-    notify('Recording saved. Edit steps or choose Replay.');
+    notify(selectedKind === 'processes' ? 'Recording saved. Set the number of runs, then run the process.' : 'Recording saved. Edit steps or choose Replay.');
   },
   'delete-test': async ({ test }) => {
     if (!test) return;
     if (!confirm(`Delete “${test.name}”? Historical results will remain.`)) return;
     if (selectedKind === 'tests') await deleteTestCase(test);
+    else if (selectedKind === 'processes') deleteProcess(test);
     else deletePrerequisite(test);
   },
   'duplicate-test': ({ test }) => {
@@ -3309,7 +3575,7 @@ const ACTIONS = {
     const clone = structuredClone(test);
     clone.id = uid();
     clone.name = `${clone.name} (copy)`.slice(0, 120);
-    project.prerequisites.push(clone);
+    project[selectedKind].push(clone);
     selectedId = clone.id;
     markDirty();
     render();
@@ -3351,7 +3617,7 @@ const ACTIONS = {
   },
   'edit-object': ({ id }) => editObject(id),
   'delete-object': ({ id }) => {
-    const isUsed = [...project.tests, ...project.prerequisites].some((owner) =>
+    const isUsed = [...project.tests, ...project.prerequisites, ...project.processes].some((owner) =>
       owner.steps.some((step) => step.locatorType === 'object' && step.target === id),
     );
     if (isUsed) throw new Error('This object is used by a step. Update the step before removing it.');
@@ -3459,12 +3725,22 @@ const ACTIONS = {
   },
   'ai-assistance': () => {
     aiTargetId = null;
+    aiRegenerateFrom = 0;
     aiPrompt = '';
     navigate('ai');
   },
   'auto-generator': ({ test }) => {
     if (selectedKind !== 'tests' || !needsAutoGenerator(test)) throw new Error('Select a QA test case with requirements');
     aiTargetId = test.id;
+    aiRegenerateFrom = 0;
+    draft = null;
+    aiPrompt = StudioAutoPrompt.build(project, test);
+    navigate('ai');
+  },
+  'regenerate-from-step': ({ test, index }) => {
+    if (selectedKind !== 'tests' || !test.qa?.manualSteps?.length) throw new Error('Select a QA test case with requirements');
+    aiTargetId = test.id;
+    aiRegenerateFrom = index;
     draft = null;
     aiPrompt = StudioAutoPrompt.build(project, test);
     navigate('ai');
@@ -3595,6 +3871,7 @@ async function switchProject(projectId) {
   await save();
   activeFolderId = null;
   aiTargetId = null;
+  aiRegenerateFrom = 0;
   aiPrompt = '';
   openProject(state.projects.find((item) => item.id === projectId));
   selectedId = project.tests[0]?.id;
@@ -3653,6 +3930,25 @@ async function handleFieldChange(element) {
     updateStepMapping(element);
   } else if (element.id === 'record-mode') {
     state.activeRecording = await api(`/api/recordings/${state.activeRecording.id}/mode`, 'POST', { mode: element.value });
+    render();
+  } else if (element.matches('[data-step-repeat]')) {
+    const step = selected().steps[Number(element.dataset.index)];
+    if (element.checked) step.repeat = true;
+    else delete step.repeat;
+    markDirty();
+    render();
+  } else if (element.matches('[data-process-runs]')) {
+    const item = project.processes.find((candidate) => candidate.id === element.dataset.id);
+    const count = Number(element.value);
+    if (!Number.isInteger(count) || count < 1 || count > MAX_PROCESS_RUNS) {
+      element.value = item.runCount || 1;
+      throw new Error(`Enter a whole number of runs from 1 to ${MAX_PROCESS_RUNS}.`);
+    }
+    item.runCount = count;
+    markDirty();
+    render();
+  } else if (element.id === 'ai-regenerate-from') {
+    aiRegenerateFrom = Number(element.value);
     render();
   } else if (element.id === 'editor-page-size') {
     editorSize = Number(element.value);
@@ -3925,10 +4221,12 @@ function refreshActivityViews() {
     $('#content').innerHTML = renderRecording();
   }
   if (view === 'debug') $('#content').innerHTML = renderDebug();
+  if (view === 'editor') refreshHistoryPanel();
   if (view === 'history') StudioHistory.refresh();
   if (view === 'execution') StudioExecution.refresh();
   if (view === 'cases') refreshCasesList();
   if (view === 'suites') updateSuiteRunButtons();
+  updateProcessRunButtons();
 }
 
 async function applyLatestState(data) {
@@ -3960,8 +4258,15 @@ async function applyLatestState(data) {
   state.activeRun = latest.activeRun;
   state.activeDebug = latest.activeDebug;
   if (!recordMappingBusy) state.activeRecording = latest.activeRecording;
+  StudioIssueReport.setState(latest);
 
-  const signature = JSON.stringify([latest.activeRun, latest.activeDebug, latest.activeRecording, projectRuns()]);
+  const signature = JSON.stringify([
+    latest.activeRun,
+    latest.activeDebug,
+    latest.activeRecording,
+    projectRuns(),
+    StudioIssueReport.signature(),
+  ]);
   if (signature !== lastRunSignature) {
     lastRunSignature = signature;
     refreshActivityViews();
@@ -4102,6 +4407,12 @@ async function init() {
     }
     [state, historyTools] = await Promise.all([api('/api/state'), loadRunHistoryTools()]);
     historyTools.recoverPlanState(state);
+    StudioIssueReport.setState(state);
+    window.addEventListener('studio:issue-reported', () => {
+      api('/api/state')
+        .then(applyLatestState)
+        .catch(() => {});
+    });
     await ensureSettings();
 
     const params = new URLSearchParams(location.search);

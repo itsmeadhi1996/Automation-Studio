@@ -246,6 +246,8 @@
           <div class="inline-actions">
             <a class="button" target="_blank" rel="noopener" href="${report}${caseQuery}">Case HTML report</a>
             <a class="button" href="${report}.pdf${caseQuery}" download>Case PDF report</a>
+            <a class="button" target="_blank" rel="noopener" href="${report}/interactive${caseQuery}">Case interactive report</a>
+            <a class="button" href="${report}.json${caseQuery}" download>Case Playwright JSON</a>
             <a class="button" target="_blank" rel="noopener" href="${report}">Full run report</a>
           </div>
           ${row.error ? `<p class="error-text">${esc(row.error)}</p>` : ''}

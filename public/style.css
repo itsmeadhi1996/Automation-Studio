@@ -2189,3 +2189,106 @@ html[data-theme="dark"] .auto-cases-table .auto-case-link {
     transition: none !important;
   }
 }
+
+/* Generation error window: a short list of what went wrong, what was expected and what was found. */
+dialog.issue-dialog {
+  width: 480px;
+}
+
+dialog.issue-dialog .dialog-actions [data-action="close-dialog"] {
+  display: none;
+}
+
+.issue-summary {
+  margin: 0;
+  color: var(--muted);
+}
+
+.issue-list {
+  display: grid;
+  gap: 10px;
+  max-height: 55vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.issue-item {
+  padding: 10px 12px;
+  border: 1px solid #ebc8c1;
+  border-left: 4px solid #c25a5a;
+  border-radius: 8px;
+  background: #fff8f6;
+}
+
+.issue-item strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.issue-item dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 10px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.issue-item dt {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.issue-item dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+html[data-theme="dark"] .issue-item {
+  border-color: #744747;
+  border-left-color: #f29999;
+  background: #2f2222;
+}
+
+/* Process automation */
+.process-card .inline-actions {
+  flex-wrap: wrap;
+}
+
+.process-runs {
+  display: grid;
+  gap: 4px;
+  max-width: 160px;
+  margin: 8px 0 12px;
+}
+
+.process-runs input {
+  width: 100%;
+}
+
+.process-hint {
+  margin: 0;
+  padding: 0 20px 18px;
+}
+
+.repeat-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.repeat-toggle input {
+  width: auto;
+}
+
+.steps-table tr.repeat-step > td:first-child {
+  box-shadow: inset 4px 0 0 var(--green, #2f8f63);
+}
+
+.process-card .process-hint {
+  padding: 0;
+}

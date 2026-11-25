@@ -3,6 +3,9 @@ import { chromium, firefox } from 'playwright';
 const MISSING_BROWSER_ERROR = /executable|browser.*not found|not installed/i;
 const CHANNELS = { chrome: 'chrome', edge: 'msedge' };
 const INSTALL_NAMES = { chrome: 'chrome', edge: 'msedge', firefox: 'firefox' };
+// Installed Chrome and Edge upgrade http:// to https://. Headless browsers cannot fall back to
+// http:// as a desktop browser does, so HTTP-only sites fail with net::ERR_BLOCKED_BY_CLIENT.
+const CHROMIUM_ARGS = ['--disable-features=HttpsUpgrades,HttpsFirstBalancedModeAutoEnable'];
 
 export const browserLabels = Object.freeze({
   chrome: 'Google Chrome',
@@ -25,7 +28,8 @@ export async function launchBrowser(name = 'chrome', { headless = true, slowMo =
   const browserName = name || 'chrome';
   const channel = CHANNELS[browserName];
   try {
-    return await type.launch({ ...(channel ? { channel } : {}), headless, slowMo });
+    const args = type === chromium ? CHROMIUM_ARGS : [];
+    return await type.launch({ ...(channel ? { channel } : {}), args, headless, slowMo });
   } catch (error) {
     if (MISSING_BROWSER_ERROR.test(error.message)) {
       throw new Error(

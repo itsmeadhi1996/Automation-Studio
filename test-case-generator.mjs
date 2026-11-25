@@ -198,15 +198,15 @@ function shortHash(value) {
 const unique = (values) => [...new Set(values)];
 
 function sizeUnit(issue) {
-  if (issue.type === 'string') return ' characters';
-  if (issue.type === 'array') return ' entries';
+  if (issue.origin === 'string') return ' characters';
+  if (issue.origin === 'array') return ' entries';
   return '';
 }
 
 function expectedTypeText(expected) {
   if (expected === 'array') return 'an array';
   if (expected === 'object') return 'an object';
-  if (expected === 'integer') return 'an integer';
+  if (expected === 'int') return 'an integer';
   return `a ${expected}`;
 }
 
@@ -218,7 +218,7 @@ function inputIssueDescription(issue) {
     return 'must be a JSON object containing optional fields, controls, and constraints; leave it blank when unused';
   }
   if (issue.code === 'invalid_type') return `must be ${expectedTypeText(issue.expected)}`;
-  if (issue.code === 'invalid_enum_value') return 'must use a supported category, field type, or control type';
+  if (issue.code === 'invalid_value') return 'must use a supported category, field type, or control type';
   if (issue.code === 'too_big') return `must contain at most ${issue.maximum}${sizeUnit(issue)}`;
   if (issue.code === 'too_small') return `must contain at least ${issue.minimum}${sizeUnit(issue)}`;
   // Custom messages are written in this schema and never contain submitted values.

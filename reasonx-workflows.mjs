@@ -2,6 +2,7 @@ import { gatherMcpContext, mcpCatalog } from './agent-mcp.mjs';
 import { agentOptions, checkpoint, parseAgentJson, reviewIssues, workflow } from './agent-workflow.mjs';
 import { aiToolset, providerKey, reasonxBaseUrl } from './integrations.mjs';
 import { resolveLocator } from './model.mjs';
+import { PROJECT_DOCUMENT_INSTRUCTIONS } from './project-documents.mjs';
 import { reasonxAdvice, reasonxChat } from './reasonx-client.mjs';
 import { checkCase, similar } from './requirement-agent.mjs';
 import { validateRequirementDraft } from './requirements.mjs';
@@ -246,8 +247,11 @@ async function runRequirementWorkflow({ settings, requirement, inspection, fetch
     ...(metadataText.length > PAGE_METADATA_LIMIT ? ['page metadata'] : []),
     ...(pageText.length > PAGE_LIMIT ? ['page inspection'] : []),
   ];
+  const hasDocuments = requirement.projectDocuments?.length > 0;
+  const analysisInstruction = ANALYSIS_INSTRUCTION + (hasDocuments ? PROJECT_DOCUMENT_INSTRUCTIONS : '');
   const reference = {
     untrustedMcpContext: mcpText.slice(0, MCP_CONTEXT_LIMIT),
+    ...(hasDocuments ? { untrustedProjectDocuments: requirement.projectDocuments } : {}),
     title: requirement.title,
     module: requirement.moduleName || '',
     pageMetadata: metadataText.slice(0, PAGE_METADATA_LIMIT),
@@ -257,10 +261,10 @@ async function runRequirementWorkflow({ settings, requirement, inspection, fetch
     page: pageText.slice(0, PAGE_LIMIT),
   };
 
-  const analysisText = clipDescription(description, ANALYSIS_INSTRUCTION, reference);
+  const analysisText = clipDescription(description, analysisInstruction, reference);
   const analysis = await flow.step('analysis', () =>
     flow.generate({
-      generate: () => ask(ANALYSIS_INSTRUCTION, { ...reference, requirement: analysisText }),
+      generate: () => ask(analysisInstruction, { ...reference, requirement: analysisText }),
       review: async (value) => validAnalysis(value),
     }),
   );
@@ -385,7 +389,13 @@ function knownLocators(project) {
   });
 }
 
-function stepIssues(step, { project, observed, known, environment }) {
+// A message that appears after an action cannot be observed beforehand. Checking text the
+// workflow itself states is not an invented selector.
+function checksStatedMessage(step, statedText) {
+  return step.locatorType === 'text' && ASSERTION_ACTIONS.includes(step.action) && statedText.includes(step.target);
+}
+
+function stepIssues(step, { project, observed, known, environment, statedText }) {
   const issues = [];
   const label = step.name || step.target;
 
@@ -402,7 +412,7 @@ function stepIssues(step, { project, observed, known, environment }) {
         JSON.stringify(element.framePath || []) === framePath,
     );
     const isKnown = known.some((item) => item.target === step.target && item.locatorType === step.locatorType);
-    if (!isObserved && !isKnown) {
+    if (!isObserved && !isKnown && !checksStatedMessage(step, statedText)) {
       issues.push(`Unmapped element: ${label}. Supply observed page context or an existing repository locator.`);
     }
   }
@@ -461,7 +471,8 @@ export async function automationWorkflow({
       if (needsAssertion && !candidate.steps.some((step) => ASSERTION_ACTIONS.includes(step.action))) {
         issues.push('Add an assertion for the expected outcome using supported actions.');
       }
-      const context = { project, observed: inspection?.elements || [], known: knownLocators(project), environment };
+      const statedText = [prompt, ...reference.requirements.map((item) => item.expectedResult)].join('\n');
+      const context = { project, observed: inspection?.elements || [], known: knownLocators(project), environment, statedText };
       for (const step of candidate.steps) issues.push(...stepIssues(step, context));
       if (issues.length) return issues;
 

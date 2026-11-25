@@ -1,6 +1,7 @@
 import { gatherMcpContext, mcpCatalog } from './agent-mcp.mjs';
 import { checkpoint } from './agent-workflow.mjs';
 import { aiToolset, providerKey, reasonxBaseUrl } from './integrations.mjs';
+import { PROJECT_DOCUMENT_INSTRUCTIONS } from './project-documents.mjs';
 import { describeReasoning, reasonxAdvice, reasonxChat } from './reasonx-client.mjs';
 import { requirementWorkflow } from './reasonx-workflows.mjs';
 import { validateRequirementDraft } from './requirements.mjs';
@@ -319,12 +320,15 @@ async function gatherContext({ session, requirement, connections, servers, signa
 
 // Turns free text into numbered, testable acceptance criteria.
 async function analyzeRequirement({ session, requirement, mcp, background, page }) {
-  const analysis = await session.askJson('analyze', ANALYSIS_INSTRUCTION, {
+  const hasDocuments = requirement.projectDocuments?.length > 0;
+  const instruction = ANALYSIS_INSTRUCTION + (hasDocuments ? PROJECT_DOCUMENT_INSTRUCTIONS : '');
+  const analysis = await session.askJson('analyze', instruction, {
     title: clip(requirement.title, 160),
     module: clip(requirement.moduleName, 120),
     requirement: background,
     pageControls: page,
     ...(mcp.results.length ? { untrustedMcpContext: mcp.results } : {}),
+    ...(hasDocuments ? { untrustedProjectDocuments: requirement.projectDocuments } : {}),
   });
 
   const listed = Array.isArray(analysis?.criteria) ? analysis.criteria : [];
@@ -353,7 +357,11 @@ export async function runRequirementAgent({ settings, requirement, inspection, f
     ? await gatherContext({ session, requirement, connections, servers, signal })
     : { results: [], used: [], notes: [] };
   const hasMcpContext = mcp.results.length > 0;
-  const background = clip(requirement.description || requirement.title, hasMcpContext ? 2200 : 2800);
+  // Documents and the instruction that explains them take their room from the description.
+  const documentRoom = requirement.projectDocuments?.length
+    ? JSON.stringify(requirement.projectDocuments).length + PROJECT_DOCUMENT_INSTRUCTIONS.length
+    : 0;
+  const background = clip(requirement.description || requirement.title, (hasMcpContext ? 2200 : 2800) - documentRoom);
   const page = pageSummary(inspection, hasMcpContext ? 700 : 900);
 
   const { criteria, sharedSetup } = await analyzeRequirement({ session, requirement, mcp, background, page });

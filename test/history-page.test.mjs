@@ -60,15 +60,15 @@ test('history page filters all runs, collapses details, persists paging; editor 
  await page.locator('.run-card').first().waitFor();
  assert.equal(await page.locator('.run-card').count(),10);assert.equal(await page.locator('.run-card[open],.run-test[open]').count(),0);
  const saved=(await api('/api/state')).projects.find(p=>p.id===project.id);assert.equal(saved.tests[0].steps[0].value,'12');assert.equal(saved.tests[0].steps[10].value,'23');
- await page.locator('#history-next').click();await page.waitForFunction(()=>document.querySelector('#history-page-label').textContent.startsWith('Page 2'));
- await page.reload();await page.waitForFunction(()=>document.querySelector('#history-page-label').textContent.startsWith('Page 2'));
+ await page.locator('#history-next').click();await page.waitForFunction(()=>document.querySelector('#history-page-label')?.textContent.startsWith('Page 2'));
+ await page.reload();await page.waitForFunction(()=>document.querySelector('#history-page-label')?.textContent.startsWith('Page 2'));
  await page.locator('[name="testName"]').fill('Case 0');await page.locator('[name="status"]').fill('failed');await page.locator('[name="suiteName"]').fill('Smoke');
- await page.getByRole('button',{name:'Apply filters'}).click();await page.waitForFunction(()=>document.querySelector('#history-page-label').textContent.includes('62 runs'));
+ await page.getByRole('button',{name:'Apply filters'}).click();await page.waitForFunction(()=>document.querySelector('#history-page-label')?.textContent.includes('62 runs'));
  assert.equal(await page.locator('.run-card[open]').count(),0);
  await page.locator('.run-card>summary').first().click();assert.equal(await page.locator('.run-card[open]').count(),1);
  await page.locator('#history-refresh').click();await page.waitForFunction(()=>!document.querySelector('#history-refresh').disabled);assert.equal(await page.locator('.run-card[open]').count(),1);
  await page.locator('[name="from"]').fill('2026-02-01');await page.locator('[name="to"]').fill('2026-02-28');await page.getByRole('button',{name:'Apply filters'}).click();
- await page.waitForFunction(()=>document.querySelector('#history-page-label').textContent.includes('14 runs'));
+ await page.waitForFunction(()=>document.querySelector('#history-page-label')?.textContent.includes('14 runs'));
  for(const width of [1365,390]){await page.setViewportSize({width,height:900});assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'Page fits '+width);}
  await page.screenshot({path:path.join(storage,'history-mobile.png')});
  await page.locator('[name="testName"]').fill('No matching case');await page.getByRole('button',{name:'Apply filters'}).click();await page.getByRole('heading',{name:'No matching runs'}).waitFor();

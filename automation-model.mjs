@@ -6,6 +6,7 @@ export function automationProject(project) {
   const mappedTests = project.tests.filter((test) => test.automation !== null);
   return {
     ...project,
+    processes: project.processes || [],
     tests: mappedTests.map((test) => ({
       ...test,
       qaCaseId: test.id,

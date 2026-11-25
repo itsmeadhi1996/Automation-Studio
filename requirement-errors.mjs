@@ -37,7 +37,7 @@ const PROPERTY_LABELS = new Map([
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 
 function invalidTypeMessage(issue, target) {
-  if (issue.expected === 'integer') return `Enter a whole number for the ${target}.`;
+  if (issue.expected === 'int') return `Enter a whole number for the ${target}.`;
   if (issue.expected === 'number') return `Enter a number for the ${target}.`;
   if (issue.expected === 'boolean') return `Choose whether the ${target} should be on or off.`;
   if (issue.expected === 'string') return `Enter text for the ${target}.`;
@@ -46,12 +46,12 @@ function invalidTypeMessage(issue, target) {
 
 function valueMessage(issue, target) {
   if (issue.code === 'too_small') {
-    if (issue.type === 'string' && issue.minimum === 1) return `Enter a ${target} before trying again.`;
+    if (issue.origin === 'string' && issue.minimum === 1) return `Enter a ${target} before trying again.`;
     return `The ${target} must be ${issue.inclusive === false ? 'greater than' : 'at least'} ${issue.minimum}.`;
   }
   if (issue.code === 'too_big') {
-    if (issue.type === 'number') return `The ${target} must be ${issue.maximum} or less.`;
-    return `The ${target} is too long. Use ${issue.maximum} ${issue.type === 'array' ? 'entries' : 'characters'} or fewer.`;
+    if (issue.origin === 'number') return `The ${target} must be ${issue.maximum} or less.`;
+    return `The ${target} is too long. Use ${issue.maximum} ${issue.origin === 'array' ? 'entries' : 'characters'} or fewer.`;
   }
   if (issue.code === 'invalid_type') return invalidTypeMessage(issue, target);
   return `${capitalize(target)} needs attention. Check it and try again.`;
@@ -73,7 +73,7 @@ function metadataEntryMessage(issue, collection, index, property) {
       : 'The smallest allowed value is higher than the largest';
     return `${limits} for ${entry}. Correct these limits in Page metadata, or clear that box and try again.`;
   }
-  if (issue.code === 'invalid_enum_value') return `The ${target} is not one of the available choices. ${METADATA_HELP}`;
+  if (issue.code === 'invalid_value') return `The ${target} is not one of the available choices. ${METADATA_HELP}`;
   if (issue.code === 'unrecognized_keys') return `Some details for ${entry} are not supported. ${METADATA_HELP}`;
   return `${valueMessage(issue, target)} ${METADATA_HELP}`;
 }
