@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { launchBrowser } from './browsers.mjs';
+import { canShowBrowser, launchBrowser } from './browsers.mjs';
 import { focusLocator, screenshotPage } from './locator-focus.mjs';
 import { assert, normalizeSteps } from './model.mjs';
 import { automaticallyNameRecordedStep } from './recorder-names.mjs';
@@ -649,6 +649,11 @@ export async function startRecording(
   const flow = project.processes?.find((item) => item.id === testId);
   const test = project.tests.find((item) => item.id === testId) || flow;
   assert(test, 'Test case not found');
+  assert(
+    headless || canShowBrowser(),
+    'Record Web needs a browser window you can click in, and this server has no screen. ' +
+      'Record on a computer running QA Studio, then export the project and import it here.',
+  );
 
   const browser = await launchBrowser(project.browser, { headless });
   try {

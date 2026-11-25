@@ -23,7 +23,12 @@ export function browserType(name = 'chrome') {
   throw new Error(`Unsupported browser: ${name}`);
 }
 
+// A Linux server without X (for example Render's Node runtime) cannot open a browser window.
+export const canShowBrowser = () => process.platform !== 'linux' || Boolean(process.env.DISPLAY);
+
 export async function launchBrowser(name = 'chrome', { headless = true, slowMo = 0 } = {}) {
+  // Replay and Debug follow along through step screenshots, so they still work without a window.
+  if (!canShowBrowser()) headless = true;
   const type = browserType(name);
   const browserName = name || 'chrome';
   const channel = CHANNELS[browserName];
