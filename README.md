@@ -26,7 +26,7 @@ Studio is built for one Windows PC, so hosting it is opt-in.
 
 The repository ships a `Dockerfile` and a `render.yaml` Blueprint. In Render, choose **New → Blueprint**, pick this repository and enter `STUDIO_ADMIN_USERNAME` and `STUDIO_ADMIN_PASSWORD` when asked. The Blueprint creates a Docker web service on the `standard` plan with a 5 GB disk at `/var/data`, where accounts, projects, runs and screenshots are kept. Render supplies `PORT` and `RENDER_EXTERNAL_URL`, so no other setting is needed.
 
-The image is Microsoft's Playwright image with Google Chrome added, so Chrome, Chromium-based and Firefox runs work. `scripts/docker-start.sh` starts a virtual screen (Xvfb) because Replay, Debug and Record Web open a visible browser. Those windows exist only on the server, so Record Web and step-by-step Debug cannot be used from a hosted site.
+The image is Microsoft's Playwright image with Google Chrome added, so Chrome, Chromium-based and Firefox runs work. The server has no screen, so Replay and Debug run without a window (follow them through the step screenshots) and Record Web shows the browser live inside Studio.
 
 ### Other hosts
 

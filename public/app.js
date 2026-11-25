@@ -740,7 +740,7 @@ function render() {
   });
   $('#run-count').textContent = historyCount();
 
-  renderMainContent();
+  keepRemoteScreen(renderMainContent);
   renderExecution();
   updateStatus();
 
@@ -898,7 +898,7 @@ function renderRecording() {
     <section class="panel">
       <div class="panel-body">
         <p role="status">${recordingSaveStatus(recording)}</p>
-        <p>Interact with the visible browser. Each interaction is saved automatically. Frames, new tabs, open shadow DOM and multiple selections are supported. File uploads require a local-path variable.</p>
+        <p>${recording.remote ? 'The browser runs on the Studio server and is shown below. Click, scroll and type in it' : 'Interact with the visible browser'}. Each interaction is saved automatically. Frames, new tabs, open shadow DOM and multiple selections are supported. File uploads require a local-path variable.</p>
         <p>Choose a verification mode and click an element: a red outline marks the target and a message confirms the saved capture. A screenshot shows the highlighted target and its position on the page.</p>
         <label>Recording mode<select id="record-mode" ${isStopped ? 'disabled' : ''}>${options(modes, recording.mode || 'actions')}</select></label>
         <p class="recorder-map-hint">${hint} ${isProcess ? '' : `<a href="${requirementsHref}" target="_blank" rel="noopener">View QA Studio requirements</a>`}</p>
@@ -907,6 +907,7 @@ function renderRecording() {
           <button data-action="record-discard" ${recordMappingBusy ? 'disabled' : ''}>Discard recording</button>
         </div>
         ${recording.warnings.map((warning) => `<p class="notice">${esc(warning)}</p>`).join('')}
+        ${recording.remote && !isStopped ? renderRemoteScreen(recording) : ''}
       </div>
       <div class="table-scroll">
         <table class="steps-table">
@@ -925,6 +926,153 @@ function renderRecording() {
         </table>
       </div>
     </section>`;
+}
+
+/* ---------- Remote recording screen ---------- */
+
+// On a server without a screen the recording browser runs hidden; this view shows it and
+// sends clicks, scrolling and keys back to it. The last frame survives re-renders.
+const REMOTE_FRAME_MS = 350;
+const REMOTE_MOVE_MS = 200;
+const REMOTE_KEYS = {
+  Enter: 'Enter', Tab: 'Tab', Backspace: 'Backspace', Delete: 'Delete', Escape: 'Escape',
+  ArrowUp: 'ArrowUp', ArrowDown: 'ArrowDown', ArrowLeft: 'ArrowLeft', ArrowRight: 'ArrowRight',
+  Home: 'Home', End: 'End', PageUp: 'PageUp', PageDown: 'PageDown',
+};
+const remoteScreen = { frameUrl: '', recordingId: '', loop: null, loading: false, inputs: Promise.resolve(), focused: false, movedAt: 0 };
+
+function renderRemoteScreen(recording) {
+  const { width, height } = recording.remote;
+  const src = remoteScreen.recordingId === recording.id ? remoteScreen.frameUrl : '';
+  return `
+    <figure class="remote-screen">
+      <img id="remote-screen" tabindex="0" width="${width}" height="${height}" ${src ? `src="${src}"` : ''}
+        alt="Live view of the recording browser. Click it, then type to enter text."
+        data-recording="${esc(recording.id)}" data-width="${width}" data-height="${height}">
+      <figcaption>Live view of the browser on the Studio server. Click it before typing; Ctrl+V pastes text.</figcaption>
+    </figure>`;
+}
+
+function sendRemoteInput(event) {
+  const viewer = $('#remote-screen');
+  if (!viewer) return;
+  const id = viewer.dataset.recording;
+  remoteScreen.inputs = remoteScreen.inputs
+    .then(() => api(`/api/recordings/${encodeURIComponent(id)}/input`, 'POST', event))
+    .then(() => refreshRemoteFrame())
+    .catch((error) => notify(error.message, true));
+}
+
+function remotePoint(viewer, event) {
+  const box = viewer.getBoundingClientRect();
+  return {
+    x: Math.round(((event.clientX - box.left) / box.width) * Number(viewer.dataset.width)),
+    y: Math.round(((event.clientY - box.top) / box.height) * Number(viewer.dataset.height)),
+  };
+}
+
+// Frames load as same-origin images (the CSP allows no blob: URLs); a frame replaces the shown
+// one only after it has loaded, so the view never flickers to empty.
+function refreshRemoteFrame() {
+  const viewer = $('#remote-screen');
+  if (!viewer || remoteScreen.loading) return Promise.resolve();
+  const id = viewer.dataset.recording;
+  const url = `/api/recordings/${encodeURIComponent(id)}/screen?frame=${Date.now()}`;
+  remoteScreen.loading = true;
+  return new Promise((resolve) => {
+    const next = new Image();
+    next.onload = () => {
+      remoteScreen.frameUrl = url;
+      remoteScreen.recordingId = id;
+      const current = $('#remote-screen');
+      if (current) current.src = url;
+      resolve();
+    };
+    next.onerror = () => resolve();
+    next.src = url;
+  }).finally(() => {
+    remoteScreen.loading = false;
+  });
+}
+
+function bindRemoteScreen(viewer) {
+  viewer.dataset.bound = 'true';
+  viewer.addEventListener('click', (event) => {
+    viewer.focus();
+    sendRemoteInput({ type: 'click', ...remotePoint(viewer, event) });
+  });
+  viewer.addEventListener('dblclick', (event) => {
+    sendRemoteInput({ type: 'click', clickCount: 2, ...remotePoint(viewer, event) });
+  });
+  viewer.addEventListener('mousemove', (event) => {
+    if (Date.now() - remoteScreen.movedAt < REMOTE_MOVE_MS) return;
+    remoteScreen.movedAt = Date.now();
+    sendRemoteInput({ type: 'move', ...remotePoint(viewer, event) });
+  });
+  viewer.addEventListener(
+    'wheel',
+    (event) => {
+      event.preventDefault();
+      sendRemoteInput({ type: 'scroll', dx: event.deltaX, dy: event.deltaY });
+    },
+    { passive: false },
+  );
+  viewer.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'v') return;
+    let key = REMOTE_KEYS[event.key];
+    if (event.key === 'Tab' && event.shiftKey) key = 'Shift+Tab';
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') key = event.metaKey ? 'Meta+a' : 'Control+a';
+    if (key) {
+      event.preventDefault();
+      sendRemoteInput({ type: 'key', key });
+    } else if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      sendRemoteInput({ type: 'text', text: event.key });
+    }
+  });
+  viewer.addEventListener('paste', (event) => {
+    const text = event.clipboardData?.getData('text') || '';
+    if (!text) return;
+    event.preventDefault();
+    sendRemoteInput({ type: 'text', text: text.slice(0, 1000) });
+  });
+  viewer.addEventListener('focus', () => {
+    remoteScreen.focused = true;
+  });
+  // A re-render removes the focused viewer; only a blur that leaves it on the page means the user moved on.
+  viewer.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (viewer.isConnected) remoteScreen.focused = false;
+    });
+  });
+}
+
+// Status polls redraw the recording view; reusing the live viewer keeps a click that spans a
+// redraw, keyboard focus and the current frame.
+function keepRemoteScreen(redraw) {
+  const live = $('#remote-screen')?.closest('.remote-screen');
+  redraw();
+  const fresh = $('#remote-screen')?.closest('.remote-screen');
+  if (live && fresh && live.querySelector('img').dataset.recording === fresh.querySelector('img').dataset.recording) {
+    fresh.replaceWith(live);
+  }
+  syncRemoteScreen();
+}
+
+// Called after every render: binds a new viewer, keeps its focus and runs one frame loop.
+function syncRemoteScreen() {
+  const viewer = $('#remote-screen');
+  if (!viewer) {
+    clearInterval(remoteScreen.loop);
+    remoteScreen.loop = null;
+    return;
+  }
+  if (!viewer.dataset.bound) bindRemoteScreen(viewer);
+  if (remoteScreen.focused && document.activeElement !== viewer) viewer.focus({ preventScroll: true });
+  if (!remoteScreen.loop) {
+    void refreshRemoteFrame();
+    remoteScreen.loop = setInterval(() => void refreshRemoteFrame(), REMOTE_FRAME_MS);
+  }
 }
 
 /* ---------- Requirements panel ---------- */
@@ -4218,7 +4366,9 @@ function refreshActivityViews() {
   renderExecution();
   $('#run-count').textContent = historyCount();
   if (view === 'recording' && !recordMappingBusy && !document.activeElement?.matches('[data-record-mapping]')) {
-    $('#content').innerHTML = renderRecording();
+    keepRemoteScreen(() => {
+      $('#content').innerHTML = renderRecording();
+    });
   }
   if (view === 'debug') $('#content').innerHTML = renderDebug();
   if (view === 'editor') refreshHistoryPanel();

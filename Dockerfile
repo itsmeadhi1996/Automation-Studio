@@ -1,4 +1,4 @@
-# Playwright's image carries Chromium, Firefox, their system libraries and Xvfb.
+# Playwright's image carries Chromium, Firefox and their system libraries.
 # Keep its version equal to the playwright version in package-lock.json.
 FROM mcr.microsoft.com/playwright:v1.64.1-noble
 

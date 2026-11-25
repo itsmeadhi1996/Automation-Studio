@@ -635,6 +635,10 @@ The prerequisite runs before the test in the same browser session. Each test sta
 
 **Discard recording** deletes the recording draft.
 
+### Recording on a hosted site
+
+When Studio runs on a server without a screen, such as Render, the recording browser runs on the server and appears live on the Record Web page. Click in that view to use the page, scroll with the mouse wheel, and type after clicking it. Ctrl+V pastes text. Everything you do there is recorded as in a visible browser. Replay and Debug run without a window on such a server; follow them through the step screenshots.
+
 ### Record expected results
 
 A click alone does not prove the application worked. Add a check:

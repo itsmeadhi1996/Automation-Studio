@@ -24,7 +24,9 @@ export function browserType(name = 'chrome') {
 }
 
 // A Linux server without X (for example Render's Node runtime) cannot open a browser window.
-export const canShowBrowser = () => process.platform !== 'linux' || Boolean(process.env.DISPLAY);
+// STUDIO_NO_SCREEN=1 does the same anywhere, for example when Studio runs as a Windows service.
+export const canShowBrowser = () =>
+  process.env.STUDIO_NO_SCREEN !== '1' && (process.platform !== 'linux' || Boolean(process.env.DISPLAY));
 
 export async function launchBrowser(name = 'chrome', { headless = true, slowMo = 0 } = {}) {
   // Replay and Debug follow along through step screenshots, so they still work without a window.

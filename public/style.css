@@ -2292,3 +2292,30 @@ html[data-theme="dark"] .issue-item {
 .process-card .process-hint {
   padding: 0;
 }
+
+/* Remote recording: the server's browser shown inside Record Web. */
+.remote-screen {
+  margin: 16px 0 0;
+}
+
+.remote-screen img {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 120px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--line);
+  cursor: crosshair;
+}
+
+.remote-screen img:focus-visible {
+  outline: 3px solid currentColor;
+  outline-offset: 2px;
+}
+
+.remote-screen figcaption {
+  margin-top: 6px;
+  font-size: 0.85rem;
+  opacity: 0.75;
+}

@@ -241,6 +241,8 @@ const WORK_LOG_ACTIONS = [
   [/^\/api\/runs\/.*\/cancel$/, () => 'Run cancellation requested'],
   [/^\/api\/runs\//, () => 'Run deleted'],
   [/^\/api\/automation\/handoff$/, () => 'Cases opened for automation'],
+  // Each click and key in the live recording view is not a work log event.
+  [/^\/api\/recordings\/[^/]+\/input$/, () => null],
   [/^\/api\/recordings/, (route) => `Recording ${route.split('/')[4] || 'started'}`],
   [/^\/api\/debug/, (route) => `Debug ${route.split('/')[4] || 'started'}`],
   [/^\/api\/schedules/, (route, method) => `Schedule ${method === 'DELETE' ? 'removed' : 'created'}`],
@@ -2838,7 +2840,29 @@ async function createUnlockedStudio({
   }
 
   async function recordingRoutes(req, res, route) {
+    const screenRoute = route.match(/^\/api\/recordings\/([\w-]+)\/screen$/);
+    if (req.method === 'GET' && screenRoute) {
+      check(recording?.id === screenRoute[1] && recording.remote, 'Recording not found');
+      check(recording.status !== 'stopped', 'Recording is already stopped');
+      const image = await recording.screen().catch(() => null);
+      // The page can be mid-navigation; the viewer simply asks again.
+      if (!image) throw httpError('The page is loading.', 503);
+      res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
+      res.end(image);
+      return true;
+    }
     if (req.method !== 'POST') return false;
+    const inputRoute = route.match(/^\/api\/recordings\/([\w-]+)\/input$/);
+    if (inputRoute) {
+      check(recording?.id === inputRoute[1], 'Recording not found');
+      try {
+        await recording.input(await readBody(req));
+      } catch (error) {
+        throw error.status ? error : httpError(error.message.split('\n')[0], 400);
+      }
+      await json(res, { ok: true });
+      return true;
+    }
     if (route === '/api/recordings') {
       const input = await readBody(req);
       const isBusy = vpn.busy || recording || startingBrowser || activeRun || debugSessions.size;

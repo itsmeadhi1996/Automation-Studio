@@ -26,6 +26,17 @@ const CAPTURED_ACTIONS = new Set([
 ]);
 const VERIFICATION_ACTIONS = new Set(['text', 'value', 'visible']);
 const RECORDER_MODES = new Set(['actions', 'visible', 'text', 'value']);
+// Remote recording: the browser runs on a server without a screen and is shown in Studio.
+const REMOTE_VIEWPORT = { width: 1440, height: 900 };
+const REMOTE_JPEG_QUALITY = 60;
+const REMOTE_TIMEOUT_MS = 5000;
+const REMOTE_MAX_SCROLL = 5000;
+const REMOTE_MAX_TEXT = 1000;
+const REMOTE_KEYS = new Set([
+  'Enter', 'Tab', 'Shift+Tab', 'Backspace', 'Delete', 'Escape', 'Space',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Home', 'End', 'PageUp', 'PageDown',
+  'Control+a', 'Meta+a',
+]);
 
 // Runs in every document and frame, including documents reached after navigation.
 // The browser receives this function's source, so it must not use anything from this module.
@@ -649,15 +660,13 @@ export async function startRecording(
   const flow = project.processes?.find((item) => item.id === testId);
   const test = project.tests.find((item) => item.id === testId) || flow;
   assert(test, 'Test case not found');
-  assert(
-    headless || canShowBrowser(),
-    'Record Web needs a browser window you can click in, and this server has no screen. ' +
-      'Record on a computer running QA Studio, then export the project and import it here.',
-  );
+  // A server without a screen runs the browser hidden and streams it to the Record Web page,
+  // which sends the user's clicks and keys back through input().
+  const remote = !headless && !canShowBrowser();
 
-  const browser = await launchBrowser(project.browser, { headless });
+  const browser = await launchBrowser(project.browser, { headless: headless || remote });
   try {
-    const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+    const context = await browser.newContext({ viewport: REMOTE_VIEWPORT });
     const page = await context.newPage();
     const pages = [page];
     const secretNames = new Map();
@@ -677,6 +686,7 @@ export async function startRecording(
       warnings: [],
       page,
       context,
+      remote,
       onChange: null,
       saveQueue: Promise.resolve(),
       pendingSaves: 0,
@@ -727,7 +737,44 @@ export async function startRecording(
           savedAt: this.savedAt,
           saving: this.pendingSaves > 0,
           saveError: this.saveError,
+          ...(this.remote ? { remote: { width: REMOTE_VIEWPORT.width, height: REMOTE_VIEWPORT.height } } : {}),
         };
+      },
+
+      // The tab the user is on: the newest open one, as a desktop browser would show.
+      activePage() {
+        return pages.filter((item) => !item.isClosed()).at(-1) || page;
+      },
+
+      screen() {
+        return this.activePage().screenshot({ type: 'jpeg', quality: REMOTE_JPEG_QUALITY, timeout: REMOTE_TIMEOUT_MS });
+      },
+
+      async input(event) {
+        assert(this.remote, 'This recording uses a visible browser window.');
+        assert(this.status !== 'stopped', 'Recording is already stopped');
+        const target = this.activePage();
+        const inView = (value, size) => Number.isFinite(value) && value >= 0 && value <= size;
+        const isPoint = inView(event?.x, REMOTE_VIEWPORT.width) && inView(event?.y, REMOTE_VIEWPORT.height);
+        if (event?.type === 'click') {
+          assert(isPoint, 'Click outside the page');
+          const clickCount = event.clickCount === 2 ? 2 : 1;
+          await target.mouse.click(event.x, event.y, { clickCount, timeout: REMOTE_TIMEOUT_MS });
+        } else if (event?.type === 'move') {
+          assert(isPoint, 'Pointer outside the page');
+          await target.mouse.move(event.x, event.y);
+        } else if (event?.type === 'scroll') {
+          const delta = (value) => Math.max(-REMOTE_MAX_SCROLL, Math.min(REMOTE_MAX_SCROLL, Number(value) || 0));
+          await target.mouse.wheel(delta(event.dx), delta(event.dy));
+        } else if (event?.type === 'text') {
+          assert(typeof event.text === 'string' && event.text.length <= REMOTE_MAX_TEXT, 'Invalid text');
+          await target.keyboard.type(event.text);
+        } else if (event?.type === 'key') {
+          assert(REMOTE_KEYS.has(event.key), 'Unsupported key');
+          await target.keyboard.press(event.key);
+        } else {
+          assert(false, 'Unsupported input');
+        }
       },
 
       async stop() {
