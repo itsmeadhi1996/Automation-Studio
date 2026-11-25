@@ -1,0 +1,9 @@
+.git
+node_modules
+data
+artifacts
+.test-output
+.playwright-mcp
+.env
+*.log
+console_messages.txt

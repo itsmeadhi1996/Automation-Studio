@@ -20,12 +20,22 @@ Open http://127.0.0.1:3300 after starting. Automation Studio is at http://127.0.
 
 ## Hosting on a server (for example Render)
 
-Studio is built for one Windows PC, so hosting it is opt-in. Set these environment variables on the host:
+Studio is built for one Windows PC, so hosting it is opt-in.
+
+### Render
+
+The repository ships a `Dockerfile` and a `render.yaml` Blueprint. In Render, choose **New → Blueprint**, pick this repository and enter `STUDIO_ADMIN_USERNAME` and `STUDIO_ADMIN_PASSWORD` when asked. The Blueprint creates a Docker web service on the `standard` plan with a 5 GB disk at `/var/data`, where accounts, projects, runs and screenshots are kept. Render supplies `PORT` and `RENDER_EXTERNAL_URL`, so no other setting is needed.
+
+The image is Microsoft's Playwright image with Google Chrome added, so Chrome, Chromium-based and Firefox runs work. `scripts/docker-start.sh` starts a virtual screen (Xvfb) because Replay, Debug and Record Web open a visible browser. Those windows exist only on the server, so Record Web and step-by-step Debug cannot be used from a hosted site.
+
+### Other hosts
+
+Set these environment variables:
 
 | Variable | Value |
 | --- | --- |
 | `HOST` | `0.0.0.0`, so the platform's proxy can reach the server |
-| `STUDIO_PUBLIC_URL` | The site's public address, for example `https://automation-studio.onrender.com`. Requests from any other host or origin still get `403 Local requests only` |
+| `STUDIO_PUBLIC_URL` | The site's public address, for example `https://studio.example.com`. Requests from any other host or origin still get `403 Local requests only`. On Render it defaults to `RENDER_EXTERNAL_URL`; set it only for a custom domain |
 | `STUDIO_ADMIN_USERNAME`, `STUDIO_ADMIN_PASSWORD` | The first administrator, created at start-up when there are no accounts. The password needs at least 12 characters. Hosted sites never show the first-run setup form, so a visitor cannot claim the site. Change the password after you sign in |
 | `STUDIO_ADMIN_NAME` | Optional display name for that administrator |
 | `STUDIO_STORAGE_DIR` | A folder on a persistent disk. Without one, accounts, projects and runs are lost on every deploy or restart |
@@ -34,8 +44,8 @@ Studio is built for one Windows PC, so hosting it is opt-in. Set these environme
 
 Limits when hosted:
 
-- Test runs need a browser on the server. On Linux, run `npx playwright install --with-deps chromium` during the build, if the platform allows installing system packages (Render's native Node runtime does not; use a Docker image based on `mcr.microsoft.com/playwright`). Choose **Chromium** as the browser: the seed test and the default browser use Google Chrome, which a Linux server does not have.
-- Record Web and step-by-step Debug open a visible browser window on the server, which nobody can see or use there.
+- Test runs need a browser on the server. Use the `Dockerfile`, or install the browsers and their system libraries yourself (`npx playwright install --with-deps chrome firefox`). Platforms that cannot install system packages, such as Render's native Node runtime, cannot run tests.
+- Microsoft Edge is not installed in the image, so choose Chrome or Firefox for hosted runs.
 - OpenVPN, the ReasonX folder and Windows credential protection (DPAPI) are Windows-only. On Linux, `credentials.key` holds the key itself, so protect the disk.
 - Sign-in throttling counts attempts per address, and behind a proxy every visitor shares the proxy's address.
 

@@ -350,7 +350,8 @@ async function createUnlockedStudio({
   port = Number(process.env.PORT || DEFAULT_PORT),
   // Hosted deployments only; locally Studio stays on loopback and accepts local requests alone.
   host = process.env.HOST || '127.0.0.1',
-  publicUrl = process.env.STUDIO_PUBLIC_URL || '',
+  // Render provides RENDER_EXTERNAL_URL; STUDIO_PUBLIC_URL wins, for example for a custom domain.
+  publicUrl = process.env.STUDIO_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
   recordingLauncher = startRecording,
   aiFetcher = fetch,
@@ -3247,7 +3248,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   };
   studio = await createStudio({ onShutdown: shutdown });
   await studio.listen();
-  console.log(`QA Studio: ${process.env.STUDIO_PUBLIC_URL || `http://127.0.0.1:${studio.server.address().port}`}`);
+  console.log(`QA Studio: ${process.env.STUDIO_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `http://127.0.0.1:${studio.server.address().port}`}`);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }

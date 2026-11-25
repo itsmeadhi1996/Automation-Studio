@@ -1,0 +1,21 @@
+# Render Blueprint: New > Blueprint, then pick this repository.
+services:
+  - type: web
+    name: automation-studio
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Persistent disks need a paid instance. Browsers need more memory than the
+    # smallest instance has, so start at standard and lower it only if runs stay stable.
+    plan: standard
+    autoDeploy: true
+    envVars:
+      # Render asks for these when the Blueprint is created. They create the first
+      # administrator; hosted sites never show the first-run setup form.
+      - key: STUDIO_ADMIN_USERNAME
+        sync: false
+      - key: STUDIO_ADMIN_PASSWORD
+        sync: false
+    disk:
+      name: studio-data
+      mountPath: /var/data
+      sizeGB: 5
