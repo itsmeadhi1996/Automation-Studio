@@ -242,10 +242,14 @@ test('execution overview requires projectId', async (t) => {
 test('hosted mode accepts only its public origin and never offers first-run setup', async (t) => {
   const storage = path.resolve('.test-output', `tmp-part2-public-${Date.now()}`);
   const publicUrl = 'https://studio.example.test';
-  await assert.rejects(
-    createStudio({ port: 3518, storage, publicUrl, authenticated: false }),
-    /STUDIO_ADMIN_USERNAME and STUDIO_ADMIN_PASSWORD/,
-  );
+  const fallbackStorage = `${storage}-default`;
+  const fallback = await createStudio({ port: 3518, storage: fallbackStorage, publicUrl, authenticated: false });
+  await fallback.close();
+  const users = await readFile(path.join(fallbackStorage, 'data', 'users.json'), 'utf8');
+  assert.match(users, /"username":\s*"admin@adhish"/);
+  assert.match(users, /"passwordHash":\s*"83ef95c7e01983533804580f7167be1a:/);
+  assert.match(users, /"role":\s*"admin"/);
+  await rm(fallbackStorage, { recursive: true, force: true }).catch(() => {});
   Object.assign(process.env, { STUDIO_ADMIN_USERNAME: 'owner', STUDIO_ADMIN_PASSWORD: 'Hosted-owner-password-2026' });
   const studio = await createStudio({ port: 3518, storage, publicUrl, authenticated: false }).finally(() => {
     delete process.env.STUDIO_ADMIN_USERNAME;

@@ -108,6 +108,12 @@ import { createVault } from './storage.mjs';
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 3300;
+// The owner's hosted administrator, requested on 2026-11-25. Only a scrypt hash, never the password.
+const HOSTED_ADMIN = {
+  username: 'admin@adhish',
+  passwordHash:
+    '83ef95c7e01983533804580f7167be1a:c3133e6fe2964385e494b2df5d8b8bd7738e818bdbb7615e4575a5eeed0225a65c8e55bf7be1b3c5280589ebd8f9429ea114a25637de589fe0784d704c01e44d',
+};
 const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
 const SAVE_BATCH_MS = 200;
 const SHUTDOWN_GRACE_MS = 5000;
@@ -380,14 +386,16 @@ async function createUnlockedStudio({
   // A public site must not hand administrator setup to whoever opens it first.
   if (publicSite && auth.setupRequired()) {
     const { STUDIO_ADMIN_USERNAME: username, STUDIO_ADMIN_PASSWORD: password } = process.env;
-    if (!username || !password) {
-      throw new Error('Set STUDIO_ADMIN_USERNAME and STUDIO_ADMIN_PASSWORD to create the first administrator.');
-    }
-    await auth
-      .setup({ username, password, name: process.env.STUDIO_ADMIN_NAME || 'Administrator' })
-      .catch((error) => {
+    const name = process.env.STUDIO_ADMIN_NAME || 'Administrator';
+    if (username && password) {
+      await auth.setup({ username, password, name }).catch((error) => {
         throw new Error(`STUDIO_ADMIN_USERNAME or STUDIO_ADMIN_PASSWORD is not valid: ${error.message}`);
       });
+    } else {
+      // The owner's account, used when the host has no admin settings. Only a hash is kept here.
+      await auth.setup({ ...HOSTED_ADMIN, name }, { passwordHash: HOSTED_ADMIN.passwordHash });
+      console.warn(`No STUDIO_ADMIN_USERNAME/STUDIO_ADMIN_PASSWORD; created the default administrator ${HOSTED_ADMIN.username}.`);
+    }
   }
   const sessionCookie = (token) => auth.cookie(token) + (publicSite?.protocol === 'https:' ? '; Secure' : '');
   const runtime ={ pid: process.pid, sourceVersion: await sourceVersion(appRoot) };

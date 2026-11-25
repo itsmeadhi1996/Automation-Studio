@@ -224,7 +224,11 @@ export async function createAuth(directory) {
     list: () => users.map(publicUser),
     find: (id) => users.find((user) => user.id === id),
 
-    setup(input) {
+    // passwordHash lets a hosted site create its administrator without the password in its source.
+    setup(input, { passwordHash } = {}) {
+      if (passwordHash !== undefined && !/^[0-9a-f]{32}:[0-9a-f]{128}$/.test(passwordHash)) {
+        fail('The administrator password hash is not valid.');
+      }
       return change(async (next) => {
         if (next.length) fail('Administrator setup is already complete.', 409);
         const fields = accountFields({
@@ -238,7 +242,7 @@ export async function createAuth(directory) {
           id: randomUUID(),
           revision: 1,
           createdAt: new Date().toISOString(),
-          passwordHash: await hashPassword(input.password),
+          passwordHash: passwordHash ?? (await hashPassword(input.password)),
         };
         next.push(user);
         return publicUser(user);
