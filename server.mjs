@@ -349,7 +349,8 @@ export async function createStudio(options = {}) {
 async function createUnlockedStudio({
   port = Number(process.env.PORT || DEFAULT_PORT),
   // Hosted deployments only; locally Studio stays on loopback and accepts local requests alone.
-  host = process.env.HOST || '127.0.0.1',
+  // Render sets RENDER on every service and only routes traffic to 0.0.0.0.
+  host = process.env.HOST || (process.env.RENDER ? '0.0.0.0' : '127.0.0.1'),
   // Render provides RENDER_EXTERNAL_URL; STUDIO_PUBLIC_URL wins, for example for a custom domain.
   publicUrl = process.env.STUDIO_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || '',
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
