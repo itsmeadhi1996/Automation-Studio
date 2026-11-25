@@ -27,10 +27,20 @@ export async function launchBrowser(name = 'chrome', { headless = true, slowMo =
   const type = browserType(name);
   const browserName = name || 'chrome';
   const channel = CHANNELS[browserName];
+  const args = type === chromium ? CHROMIUM_ARGS : [];
   try {
-    const args = type === chromium ? CHROMIUM_ARGS : [];
     return await type.launch({ ...(channel ? { channel } : {}), args, headless, slowMo });
   } catch (error) {
+    // Linux servers such as Render cannot install Chrome or Edge without root, so use
+    // Playwright's Chromium, which shares their engine.
+    if (channel && process.platform === 'linux' && MISSING_BROWSER_ERROR.test(error.message)) {
+      return chromium.launch({ args, headless, slowMo }).catch((fallbackError) => {
+        throw new Error(
+          `${browserLabels[browserName]} is not installed, and Chromium could not start either: ` +
+            fallbackError.message.split('\n')[0],
+        );
+      });
+    }
     if (MISSING_BROWSER_ERROR.test(error.message)) {
       throw new Error(
         `${browserLabels[browserName]} is not installed or could not be found. ` +

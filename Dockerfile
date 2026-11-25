@@ -5,7 +5,7 @@ FROM mcr.microsoft.com/playwright:v1.64.1-noble
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev \
+RUN npm ci --omit=dev --ignore-scripts \
   # The seed test and the default project browser use Google Chrome.
   && npx playwright install chrome \
   && npm cache clean --force

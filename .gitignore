@@ -6,3 +6,4 @@ artifacts/
 *.log
 console_messages.txt
 .playwright-mcp/
+.browsers/

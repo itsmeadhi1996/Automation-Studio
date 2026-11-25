@@ -20,7 +20,8 @@
     "mcp:test-cases": "node test-case-mcp.mjs",
     "agents": "node studio-agents.mjs",
     "clean": "node scripts/clean-test-output.mjs",
-    "restore-drill": "node scripts/restore-drill.mjs"
+    "restore-drill": "node scripts/restore-drill.mjs",
+    "postinstall": "node scripts/install-hosted-browsers.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.3.0",
