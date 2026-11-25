@@ -121,3 +121,9 @@ These differ from 3.0 on purpose:
 ## Changes to ported tests (Phase 11)
 
 - `history-page.test.mjs` read `#history-page-label` straight after `page.reload()`, before the page had rendered it, so the predicate threw instead of waiting. It failed the same way on the Phase 10 commit. The predicate now uses `?.` and waits for the element. What it checks is unchanged.
+
+## Hosted mode
+
+- **Added at the project owner's request on 2026-11-25** to deploy on Render. Part 2 requires a `127.0.0.1` bind, and that stays the default. `HOST` changes the bind address, and `STUDIO_PUBLIC_URL` adds exactly one public host and origin to the local-request guard. Without `STUDIO_PUBLIC_URL`, a `0.0.0.0` bind still rejects every non-local request.
+- A hosted site creates its first administrator from `STUDIO_ADMIN_USERNAME` and `STUDIO_ADMIN_PASSWORD` and refuses to start without them, so the first visitor cannot claim the site through first-run setup.
+- With an `https:` public URL the session cookie gets `Secure`.

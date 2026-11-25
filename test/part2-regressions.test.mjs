@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { request as httpRequest } from 'node:http';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createStudio } from './support.mjs';
 import { createVault } from '../storage.mjs';
@@ -236,4 +237,46 @@ test('execution overview requires projectId', async (t) => {
   const response = await f.api('/api/automation/execution-overview', 'GET', undefined, f.adminCookie);
   assert.equal(response.status, 400);
   assert.equal(response.data.error, 'projectId is required.');
+});
+
+test('hosted mode accepts only its public origin and never offers first-run setup', async (t) => {
+  const storage = path.resolve('.test-output', `tmp-part2-public-${Date.now()}`);
+  const publicUrl = 'https://studio.example.test';
+  await assert.rejects(
+    createStudio({ port: 3518, storage, publicUrl, authenticated: false }),
+    /STUDIO_ADMIN_USERNAME and STUDIO_ADMIN_PASSWORD/,
+  );
+  Object.assign(process.env, { STUDIO_ADMIN_USERNAME: 'owner', STUDIO_ADMIN_PASSWORD: 'Hosted-owner-password-2026' });
+  const studio = await createStudio({ port: 3518, storage, publicUrl, authenticated: false }).finally(() => {
+    delete process.env.STUDIO_ADMIN_USERNAME;
+    delete process.env.STUDIO_ADMIN_PASSWORD;
+  });
+  await studio.listen();
+  t.after(async () => {
+    await studio.close();
+    await rm(storage, { recursive: true, force: true }).catch(() => {});
+  });
+  // fetch() drops a custom Host header, so send the hosted site's headers through node:http.
+  const request = (route, headers, body) =>
+    new Promise((resolve, reject) => {
+      const req = httpRequest(
+        { host: '127.0.0.1', port: 3518, path: route, method: body ? 'POST' : 'GET', headers: { 'Content-Type': 'application/json', ...headers } },
+        (res) => {
+          let text = '';
+          res.on('data', (chunk) => (text += chunk));
+          res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, data: text && JSON.parse(text) }));
+        },
+      );
+      req.on('error', reject);
+      req.end(body && JSON.stringify(body));
+    });
+  const site = { Host: 'studio.example.test', Origin: publicUrl };
+  assert.equal((await request('/api/auth/session', site)).data.setupRequired, false);
+  const setup = await request('/api/auth/setup', site, { username: 'x', name: 'x', password: 'Attacker-password-2026' });
+  assert.equal(setup.status, 409);
+  const login = await request('/api/auth/login', site, { username: 'owner', password: 'Hosted-owner-password-2026' });
+  assert.equal(login.status, 200);
+  assert.match(login.headers['set-cookie'][0], /; Secure$/);
+  assert.equal((await request('/api/auth/session', { Host: 'evil.example.test' })).status, 403);
+  assert.equal((await request('/api/auth/session', { ...site, Origin: 'https://evil.example.test' })).status, 403);
 });

@@ -348,6 +348,9 @@ export async function createStudio(options = {}) {
 
 async function createUnlockedStudio({
   port = Number(process.env.PORT || DEFAULT_PORT),
+  // Hosted deployments only; locally Studio stays on loopback and accepts local requests alone.
+  host = process.env.HOST || '127.0.0.1',
+  publicUrl = process.env.STUDIO_PUBLIC_URL || '',
   storage = process.env.STUDIO_STORAGE_DIR || appRoot,
   recordingLauncher = startRecording,
   aiFetcher = fetch,
@@ -368,7 +371,20 @@ async function createUnlockedStudio({
   const metrics = createMetrics();
   const vault = await createVault(dataDir);
   const auth = await createAuth(dataDir);
-  const runtime = { pid: process.pid, sourceVersion: await sourceVersion(appRoot) };
+  const publicSite = publicUrl ? new URL(publicUrl) : null;
+  if (publicSite && !['http:', 'https:'].includes(publicSite.protocol)) {
+    throw new Error('STUDIO_PUBLIC_URL must start with http:// or https://');
+  }
+  // A public site must not hand administrator setup to whoever opens it first.
+  if (publicSite && auth.setupRequired()) {
+    const { STUDIO_ADMIN_USERNAME: username, STUDIO_ADMIN_PASSWORD: password } = process.env;
+    if (!username || !password) {
+      throw new Error('Set STUDIO_ADMIN_USERNAME and STUDIO_ADMIN_PASSWORD to create the first administrator.');
+    }
+    await auth.setup({ username, password, name: process.env.STUDIO_ADMIN_NAME || 'Administrator' });
+  }
+  const sessionCookie = (token) => auth.cookie(token) + (publicSite?.protocol === 'https:' ? '; Secure' : '');
+  const runtime ={ pid: process.pid, sourceVersion: await sourceVersion(appRoot) };
   const requestScope = new AsyncLocalStorage();
   const serveStatic = createStaticResponder(path.join(appRoot, 'public'));
 
@@ -744,13 +760,13 @@ async function createUnlockedStudio({
     }
     if (req.method === 'POST' && route === '/api/auth/login') {
       const result = await auth.login(await readBody(req), req.socket.remoteAddress);
-      res.setHeader('Set-Cookie', auth.cookie(result.token));
+      res.setHeader('Set-Cookie', sessionCookie(result.token));
       await json(res, { user: result.user, home: homeFor(result.user) });
       return true;
     }
     if (req.method === 'POST' && route === '/api/auth/logout') {
       auth.logout(req);
-      res.setHeader('Set-Cookie', auth.cookie(''));
+      res.setHeader('Set-Cookie', sessionCookie(''));
       await json(res, { loggedOut: true });
       return true;
     }
@@ -3055,6 +3071,10 @@ async function createUnlockedStudio({
   async function handleRequest(req, res) {
     const hosts = [`127.0.0.1:${port}`, `localhost:${port}`];
     const origins = hosts.map((host) => `http://${host}`);
+    if (publicSite) {
+      hosts.push(publicSite.host);
+      origins.push(publicSite.origin);
+    }
     const { host, origin } = req.headers;
     const isLocal =
       hosts.includes(host) && (!origin || origins.includes(origin)) && req.headers['sec-fetch-site'] !== 'cross-site';
@@ -3096,7 +3116,7 @@ async function createUnlockedStudio({
       }
       if (route === '/api/auth/password' && req.method === 'PUT') {
         await auth.password(user.id, await readBody(req));
-        res.setHeader('Set-Cookie', auth.cookie(''));
+        res.setHeader('Set-Cookie', sessionCookie(''));
         await json(res, { changed: true });
         return;
       }
@@ -3175,7 +3195,7 @@ async function createUnlockedStudio({
     listen: () =>
       new Promise((resolve, reject) => {
         server.once('error', reject);
-        server.listen(port, '127.0.0.1', () => {
+        server.listen(port, host, () => {
           server.off('error', reject);
           scheduleTimer = setInterval(() => {
             tickSchedules().catch((error) => console.error('Schedule update failed:', error.message));
@@ -3227,7 +3247,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   };
   studio = await createStudio({ onShutdown: shutdown });
   await studio.listen();
-  console.log(`QA Studio: http://127.0.0.1:${studio.server.address().port}`);
+  console.log(`QA Studio: ${process.env.STUDIO_PUBLIC_URL || `http://127.0.0.1:${studio.server.address().port}`}`);
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
