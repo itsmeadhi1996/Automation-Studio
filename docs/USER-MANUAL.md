@@ -637,7 +637,9 @@ The prerequisite runs before the test in the same browser session. Each test sta
 
 ### Recording on a hosted site
 
-When Studio runs on a server without a screen, such as Render, the recording browser runs on the server and appears live on the Record Web page. Click in that view to use the page, scroll with the mouse wheel, and type after clicking it. Ctrl+V pastes text. Everything you do there is recorded as in a visible browser. Replay and Debug run without a window on such a server; follow them through the step screenshots.
+When Studio runs on a server without a screen, such as Render, the recording browser runs on the server and Start recording opens it in a separate **recording window**. Allow pop-ups for the site if your browser asks; if the window is blocked or closed, select **Open recording window** on the Record Web page. Click in the window to use the page, scroll with the mouse wheel, and type after clicking it. Ctrl+V pastes text. Everything you do there is recorded as in a visible browser, and the window closes when the recording stops. Replay and Debug run without a window on such a server; follow them through the step screenshots.
+
+Each recorded click outlines the clicked element in red for a moment, in the visible browser and in the recording window, so you can see which element the step uses.
 
 ### Record expected results
 

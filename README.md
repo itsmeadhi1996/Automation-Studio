@@ -17,7 +17,7 @@ The first start needs internet access and takes a few minutes. Later starts skip
 - Windows 10 or 11 keeps the encrypted workspace key in Windows DPAPI, tied to the Windows account that started Studio. On Linux and macOS, `credentials.key` holds the key itself, so protect the folder.
 - Google Chrome or Microsoft Edge runs a test when installed. When neither is installed, Studio uses Playwright's Chromium, which shares their engine. Playwright Firefox downloads the first time a Firefox run needs it.
 - On Linux, Playwright's browsers need system libraries. If a run reports missing libraries, run `sudo npx playwright install-deps chromium firefox` once.
-- Record Web opens its own browser window on a computer with a screen. On a server without one, the browser is shown inside the Record Web page instead.
+- Record Web opens its own browser window on a computer with a screen. On a server without one, it opens a recording window (a pop-up at `/automation/live`) that shows the browser running on the server; allow pop-ups for the site. Either way, each recorded click outlines its element in red for a moment.
 
 ## Port and address
 
@@ -35,7 +35,7 @@ Studio is built for one Windows PC, so hosting it is opt-in.
 
 The repository ships a `Dockerfile` and a `render.yaml` Blueprint. In Render, choose **New → Blueprint**, pick this repository and enter `STUDIO_ADMIN_USERNAME` and `STUDIO_ADMIN_PASSWORD` when asked. The Blueprint creates a Docker web service on the `standard` plan with a 5 GB disk at `/var/data`, where accounts, projects, runs and screenshots are kept. Render supplies `PORT` and `RENDER_EXTERNAL_URL`, so no other setting is needed.
 
-The image is Microsoft's Playwright image with Google Chrome added, so Chrome, Chromium-based and Firefox runs work. The server has no screen, so Replay and Debug run without a window (follow them through the step screenshots) and Record Web shows the browser live inside Studio.
+The image is Microsoft's Playwright image with Google Chrome added, so Chrome, Chromium-based and Firefox runs work. The server has no screen, so Replay and Debug run without a window (follow them through the step screenshots) and Record Web shows the browser in a recording window.
 
 ### Other hosts
 

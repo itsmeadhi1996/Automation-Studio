@@ -1,0 +1,130 @@
+/* The recording window opened by Record Web on a Studio server without a screen. */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--ui-page);
+  color: var(--ui-ink);
+  font: 14px/1.5 var(--ui-font);
+}
+
+.live-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 8px 16px;
+  background: var(--ui-card);
+  border-bottom: 1px solid var(--ui-edge);
+}
+
+.live-header h1 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.live-header p {
+  margin: 0;
+  color: var(--ui-soft);
+}
+
+.live-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--ui-error);
+}
+
+body.stopped .live-dot {
+  background: var(--ui-control);
+}
+
+.live-main {
+  flex: 1;
+  min-height: 0;
+  padding: 12px 16px;
+}
+
+.remote-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  margin: 0;
+}
+
+.remote-screen[hidden] {
+  display: none;
+}
+
+/* The frame keeps the image's shape, so a click maps to the same point in the browser. */
+.remote-frame {
+  position: relative;
+  min-height: 0;
+  max-width: 100%;
+}
+
+.remote-screen img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: calc(100vh - 110px);
+  min-width: 120px;
+  min-height: 120px;
+  border: 1px solid var(--ui-edge);
+  border-radius: 8px;
+  background: var(--ui-edge);
+  cursor: crosshair;
+}
+
+.remote-screen img:focus-visible {
+  outline: 3px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+
+.remote-screen figcaption {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--ui-soft);
+}
+
+/* Marks where a click landed until the next frame shows its effect. */
+.click-mark {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  border: 3px solid #e5484d;
+  border-radius: 50%;
+  background: rgba(229, 72, 77, 0.25);
+  pointer-events: none;
+  animation: click-mark 700ms ease-out forwards;
+}
+
+@keyframes click-mark {
+  from {
+    transform: scale(0.4);
+    opacity: 1;
+  }
+  to {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .click-mark {
+    animation: none;
+    opacity: 0.8;
+  }
+}

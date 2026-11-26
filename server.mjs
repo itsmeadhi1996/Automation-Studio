@@ -18,7 +18,7 @@ import {
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { launchBrowser, launchPlaywrightBrowser } from './browsers.mjs';
+import { canShowBrowser, launchBrowser, launchPlaywrightBrowser } from './browsers.mjs';
 import {
   createJiraIssue,
   issueDraft,
@@ -171,6 +171,8 @@ const SIGNED_OUT_REDIRECTS = new Set([
 ]);
 
 const SAME_NAME_ASSETS = [
+  'live.js',
+  'live.css',
   'qa.js',
   'app.js',
   'automation-cases.js',
@@ -210,6 +212,7 @@ const SAME_NAME_ASSETS = [
 const STATIC_ROUTES = new Map([
   ['/', 'qa.html'],
   ['/automation', 'index.html'],
+  ['/automation/live', 'live.html'],
   ['/run-history', 'index.html'],
   ['/admin', 'admin.html'],
   ['/admin/projects', 'projects.html'],
@@ -948,6 +951,8 @@ async function createUnlockedStudio({
     activeRun: isVisible(store.runs.find((run) => run.id === activeRun)) ? activeRun : null,
     activeRecording: isVisible(recording) ? recording.summary() : null,
     activeDebug: [...debugSessions.values()].map((session) => session.summary()).find(isVisible) || null,
+    // Without a screen, Record Web shows the recording browser in a separate recording window.
+    browserScreen: canShowBrowser(),
   });
 
   async function workspaceRoutes(req, res, route, url, user) {

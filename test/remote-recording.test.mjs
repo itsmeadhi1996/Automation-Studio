@@ -29,6 +29,43 @@ function withoutScreen(t) {
 
 const drain = (session) => session.page.evaluate(() => window.__studioRecord({ action: 'barrier' }));
 
+const until = async (condition, timeout = 15000) => {
+  const end = Date.now() + timeout;
+  while (!(await condition()) && Date.now() < end) await new Promise((resolve) => setTimeout(resolve, 100));
+  return condition();
+};
+
+// A Studio without a screen, a form site and a browser. The API helper fails on any error.
+async function hostedStudio(t, port) {
+  withoutScreen(t);
+  const url = await formServer(t);
+  const base = `http://127.0.0.1:${port}`;
+  const storage = path.resolve('.test-output', `remote-recording-${port}-${Date.now()}`);
+  const studio = await createStudio({ port, storage });
+  await studio.listen();
+  const browser = await chromium.launch();
+  t.after(async () => {
+    await browser.close();
+    await studio.close();
+    await rm(storage, { recursive: true, force: true }).catch(() => {});
+  });
+  const api = async (route, method = 'GET', body) => {
+    const response = await fetch(base + route, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    assert.ok(response.ok, await response.clone().text());
+    return response.json();
+  };
+  const project = (await api('/api/state?workspace=automation')).projects[0];
+  const start = () => api('/api/recordings', 'POST', { projectId: project.id, testId: 'welcome', url });
+  const steps = async () => (await api('/api/status')).activeRecording?.steps || [];
+  return { base, url, browser, api, start, steps };
+}
+
+const shown = (page) => page.waitForFunction(() => document.querySelector('#remote-screen')?.naturalWidth > 0);
+
 test('without a screen, recording streams the hidden browser and records input sent to it', { timeout: 60000 }, async (t) => {
   withoutScreen(t);
   const url = await formServer(t);
@@ -55,64 +92,115 @@ test('without a screen, recording streams the hidden browser and records input s
   await assert.rejects(session.input({ type: 'text', text: 'late' }), /already stopped/);
 });
 
-test('Record Web shows the remote browser and turns clicks and typing on it into steps', { timeout: 90000 }, async (t) => {
-  withoutScreen(t);
-  const url = await formServer(t);
-  const port = 3541;
-  const base = `http://127.0.0.1:${port}`;
-  const storage = path.resolve('.test-output', `remote-recording-${Date.now()}`);
-  const studio = await createStudio({ port, storage });
-  await studio.listen();
-  const browser = await chromium.launch();
-  t.after(async () => {
-    await browser.close();
-    await studio.close();
-    await rm(storage, { recursive: true, force: true }).catch(() => {});
-  });
-  const api = async (route, method = 'GET', body) => {
-    const response = await fetch(base + route, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    assert.ok(response.ok, await response.clone().text());
-    return response.json();
-  };
-  const project = (await api('/api/state?workspace=automation')).projects[0];
-  const recording = await api('/api/recordings', 'POST', { projectId: project.id, testId: 'welcome', url });
-  assert.ok(recording.remote);
-  // Each click or key is not a separate work log entry.
-  await api(`/api/recordings/${recording.id}/input`, 'POST', { type: 'move', x: 10, y: 10 });
-
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } });
+test('Record Web opens a recording window that turns clicks and typing into steps', { timeout: 90000 }, async (t) => {
+  const { base, url, browser, steps } = await hostedStudio(t, 3541);
+  const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
-  await page.goto(`${base}/automation?projectId=${project.id}&view=recording`);
-  const viewer = page.locator('#remote-screen');
-  await viewer.waitFor();
-  await page.waitForFunction(() => document.querySelector('#remote-screen')?.naturalWidth > 0);
+  await page.goto(`${base}/automation`);
+  await page.getByRole('button', { name: 'Record Web', exact: true }).click();
+  await page.getByLabel('Starting URL').fill(url);
+  const opened = page.waitForEvent('popup');
+  await page.getByRole('button', { name: 'Start recording', exact: true }).click();
+  const popup = await opened;
+  popup.on('pageerror', (error) => errors.push(error.message));
+  await page.getByRole('button', { name: 'Stop and review' }).waitFor();
+  // The main page does not show the browser; the recording window does.
+  assert.equal(await page.locator('#remote-screen').count(), 0);
+  assert.equal(new URL(popup.url()).pathname, '/automation/live');
+  await popup.setViewportSize({ width: 1600, height: 1200 });
+  await shown(popup);
+  await popup.getByText(/1 steps saved/).waitFor();
 
   // Aim at the field and button through the scaled image, as a user would.
-  const box = await viewer.boundingBox();
+  const box = await popup.locator('#remote-screen').boundingBox();
   const scale = box.width / 1440;
-  await page.mouse.click(box.x + 250 * scale, box.y + 120 * scale);
-  await page.keyboard.type('Remote user');
-  await page.mouse.click(box.x + 160 * scale, box.y + 220 * scale);
-
-  // Keys travel one at a time, so wait for the whole value and the Save click.
-  const steps = async () => (await api('/api/status')).activeRecording?.steps || [];
+  await popup.mouse.click(box.x + 250 * scale, box.y + 120 * scale);
+  assert.equal(await popup.locator('.click-mark').count(), 1, 'the click is marked in red at once');
+  await popup.keyboard.type('Remote user');
+  await popup.mouse.click(box.x + 160 * scale, box.y + 220 * scale);
   const typed = (list) => list.some((step) => step.action === 'fill' && step.value === 'Remote user');
   const saved = (list) => list.some((step) => step.action === 'click' && step.target.includes('save'));
-  for (let i = 0; i < 60 && !(typed(await steps()) && saved(await steps())); i++) {
-    await new Promise((resolve) => setTimeout(resolve, 250));
-  }
-  const recorded = await steps();
-  assert.ok(typed(recorded), JSON.stringify(recorded));
-  assert.ok(saved(recorded), JSON.stringify(recorded));
-  assert.deepEqual(errors, []);
+  assert.ok(await until(async () => typed(await steps()) && saved(await steps())), JSON.stringify(await steps()));
+  const count = (await steps()).length;
+  await popup.getByText(`${count} steps saved`).waitFor();
 
-  const stopped = await api(`/api/recordings/${recording.id}/stop`, 'POST', {});
-  assert.equal(stopped.status, 'stopped');
-  assert.equal((await fetch(`${base}/api/recordings/${recording.id}/screen`)).status, 400);
-  await page.waitForFunction(() => !document.querySelector('#remote-screen'));
+  // Closing the window leaves the recording running, and the button opens it again.
+  await popup.close();
+  const reopened = page.waitForEvent('popup');
+  await page.getByRole('button', { name: 'Open recording window' }).click();
+  const again = await reopened;
+  await shown(again);
+
+  // Stopping the recording closes the window.
+  const closed = again.waitForEvent('close');
+  await page.getByRole('button', { name: 'Stop and review' }).click();
+  await closed;
+  assert.equal(await page.getByRole('button', { name: 'Open recording window' }).count(), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('over a slow link, the recording window streams frames and pointer moves never hold back a click', { timeout: 90000 }, async (t) => {
+  const { base, browser, api, start, steps } = await hostedStudio(t, 3542);
+  const recording = await start();
+  assert.equal(recording.remote.stream, true);
+
+  const page = await browser.newPage({ viewport: { width: 1600, height: 1200 } });
+  // Each input takes 400 ms to reach the server, as from a browser far from a hosted Studio.
+  let sent = 0;
+  await page.route('**/input', async (route) => {
+    sent += 1;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await route.continue();
+  });
+  await page.goto(`${base}/automation/live`);
+  await shown(page);
+
+  const box = await page.locator('#remote-screen').boundingBox();
+  const scale = box.width / 1440;
+  for (let i = 0; i < 40; i++) {
+    await page.mouse.move(box.x + (300 + i * 10) * scale, box.y + 400 * scale);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const clickedAt = Date.now();
+  await page.mouse.click(box.x + 160 * scale, box.y + 220 * scale);
+  const saved = (list) => list.some((step) => step.action === 'click' && step.target.includes('save'));
+  await until(async () => saved(await steps()), 10000);
+  assert.ok(Date.now() - clickedAt < 2000, `the click took ${Date.now() - clickedAt} ms behind queued moves`);
+  assert.ok(sent < 15, `${sent} inputs were sent for 40 pointer moves and a click`);
+  // The streamed view shows changes without asking for frames.
+  const polled = await page.evaluate(() => performance.getEntriesByType('resource').some((entry) => entry.name.includes('/screen?')));
+  assert.equal(polled, false);
+  await api(`/api/recordings/${recording.id}/stop`, 'POST', {});
+});
+
+test('when the stream shows no frame, the recording window asks for frames instead', { timeout: 90000 }, async (t) => {
+  const { base, browser, api, start } = await hostedStudio(t, 3543);
+  const recording = await start();
+  const page = await browser.newPage();
+  // A proxy that never passes the stream on.
+  await page.route('**/stream', () => {});
+  await page.goto(`${base}/automation/live`);
+  await page.waitForFunction(() => /\/screen\?/.test(document.querySelector('#remote-screen')?.src || ''), null, { timeout: 15000 });
+  await shown(page);
+  await api(`/api/recordings/${recording.id}/stop`, 'POST', {});
+});
+
+test('a recorded click outlines its element in red for a moment', { timeout: 60000 }, async (t) => {
+  const url = await formServer(t);
+  const session = await startRecording({ id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Flash' }] }, 't', url, { headless: true });
+  t.after(() => session.stop());
+  const outline = () =>
+    session.page.evaluate(() => {
+      const box = document.querySelector('qa-studio-recorder-feedback')?.shadowRoot.querySelector('[data-capture-highlight]');
+      return box && !box.hidden ? { color: getComputedStyle(box).borderTopColor, width: box.style.width } : null;
+    });
+  await session.page.click('#save');
+  assert.deepEqual(await outline(), { color: 'rgb(229, 72, 77)', width: '120px' });
+  // Moving the pointer away does not clear it at once, but it clears soon after.
+  await session.page.mouse.move(700, 700);
+  assert.notEqual(await outline(), null);
+  assert.ok(await until(async () => (await outline()) === null, 3000));
+  await drain(session);
+  assert.ok(session.steps.some((step) => step.action === 'click'), 'the click is still recorded');
 });

@@ -42,6 +42,7 @@ const REMOTE_KEYS = new Set([
 // The browser receives this function's source, so it must not use anything from this module.
 export function installRecorder() {
   const AUTO_HIDE_MS = 3000;
+  const CLICK_FLASH_MS = 1200;
   const TOOLBOX_POLL_MS = 800;
   const VERIFY_MODES = ['text', 'value', 'visible'];
   const CLICKABLE =
@@ -198,6 +199,7 @@ export function installRecorder() {
   let selectedElement;
   let feedbackVersion = 0;
   let capturingEvidence = false;
+  let flashUntil = 0;
 
   const clearHighlight = () => {
     selectedElement = null;
@@ -258,6 +260,16 @@ export function installRecorder() {
       toast.hidden = true;
       clearHighlight();
     }, AUTO_HIDE_MS);
+  };
+
+  // A recorded click outlines its element in red for a moment, in the window and the live view.
+  const flashClick = (el) => {
+    highlightElement(el);
+    flashUntil = Date.now() + CLICK_FLASH_MS;
+    clearTimeout(feedbackTimer);
+    feedbackTimer = setTimeout(() => {
+      if (!capturingEvidence) clearHighlight();
+    }, CLICK_FLASH_MS);
   };
 
   window.__studioPrepareEvidence = (el) => {
@@ -408,7 +420,7 @@ export function installRecorder() {
       }
       if (capturingEvidence) return;
       if (!VERIFY_MODES.includes(window.__studioRecorderMode)) {
-        clearHighlight();
+        if (Date.now() >= flashUntil) clearHighlight();
         return;
       }
       const el = element(event);
@@ -567,7 +579,9 @@ export function installRecorder() {
       }
       if (!el || el.closest('select,option,input[type=checkbox],input[type=radio],input[type=file]')) return;
       if (el.closest('label')?.control?.matches('input[type=checkbox],input[type=radio]')) return;
-      emit('click', el.closest(CLICKABLE) || el);
+      const target = el.closest(CLICKABLE) || el;
+      flashClick(target);
+      emit('click', target);
     },
     true,
   );
