@@ -109,6 +109,8 @@ import { createVault } from './storage.mjs';
 const appRoot = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_PORT = 3300;
+const STREAM_BOUNDARY = 'studio-frame';
+const STREAM_KEEPALIVE_MS = 15000;
 // The owner's hosted administrator, requested on 2026-11-25. Only a scrypt hash, never the password.
 const HOSTED_ADMIN = {
   username: 'admin@adhish',
@@ -2849,6 +2851,33 @@ async function createUnlockedStudio({
       if (!image) throw httpError('The page is loading.', 503);
       res.writeHead(200, { 'Content-Type': 'image/jpeg', 'Cache-Control': 'no-store' });
       res.end(image);
+      return true;
+    }
+    const streamRoute = route.match(/^\/api\/recordings\/([\w-]+)\/stream$/);
+    if (req.method === 'GET' && streamRoute) {
+      check(recording?.id === streamRoute[1] && recording.canStream, 'Recording not found');
+      check(recording.status !== 'stopped', 'Recording is already stopped');
+      // An <img> shows each part of a multipart/x-mixed-replace response as it arrives.
+      res.writeHead(200, {
+        'Content-Type': `multipart/x-mixed-replace; boundary=${STREAM_BOUNDARY}`,
+        'Cache-Control': 'no-store',
+        'X-Accel-Buffering': 'no',
+      });
+      let last = null;
+      const send = (image) => {
+        if (res.writableEnded || res.destroyed) return;
+        last = image;
+        res.write(`--${STREAM_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${image.length}\r\n\r\n`);
+        res.write(image);
+        res.write('\r\n');
+      };
+      // Proxies close quiet connections, and the browser sends frames only when the page changes.
+      const keepAlive = setInterval(() => last && send(last), STREAM_KEEPALIVE_MS);
+      const stop = await recording.watch({ frame: send, end: () => res.end() });
+      req.on('close', () => {
+        clearInterval(keepAlive);
+        stop();
+      });
       return true;
     }
     if (req.method !== 'POST') return false;

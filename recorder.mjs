@@ -737,7 +737,9 @@ export async function startRecording(
           savedAt: this.savedAt,
           saving: this.pendingSaves > 0,
           saveError: this.saveError,
-          ...(this.remote ? { remote: { width: REMOTE_VIEWPORT.width, height: REMOTE_VIEWPORT.height } } : {}),
+          ...(this.remote
+            ? { remote: { width: REMOTE_VIEWPORT.width, height: REMOTE_VIEWPORT.height, stream: this.canStream } }
+            : {}),
         };
       },
 
@@ -777,8 +779,56 @@ export async function startRecording(
         }
       },
 
+      // Streams frames of the active tab to viewers. Chromium pushes a frame only when the page
+      // changes; other browsers fall back to the viewer asking for screen().
+      canStream: remote && project.browser !== 'firefox',
+      viewers: new Set(),
+      lastFrame: null,
+      cast: null,
+
+      async watch(viewer) {
+        assert(this.canStream && this.status !== 'stopped', 'Live view is not available');
+        this.viewers.add(viewer);
+        if (this.lastFrame) viewer.frame(this.lastFrame);
+        await this.castActivePage();
+        return () => {
+          this.viewers.delete(viewer);
+          if (!this.viewers.size) void this.endCast();
+        };
+      },
+
+      async castActivePage() {
+        const target = this.activePage();
+        if (!this.viewers.size || this.cast?.page === target) return;
+        await this.endCast();
+        const cdp = await context.newCDPSession(target);
+        const cast = { page: target, cdp };
+        this.cast = cast;
+        cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
+          void cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
+          if (this.cast !== cast) return;
+          this.lastFrame = Buffer.from(data, 'base64');
+          for (const viewer of this.viewers) viewer.frame(this.lastFrame);
+        });
+        await cdp.send('Page.startScreencast', {
+          format: 'jpeg',
+          quality: REMOTE_JPEG_QUALITY,
+          maxWidth: REMOTE_VIEWPORT.width,
+          maxHeight: REMOTE_VIEWPORT.height,
+        });
+      },
+
+      async endCast() {
+        const cast = this.cast;
+        this.cast = null;
+        if (cast) await cast.cdp.detach().catch(() => {});
+      },
+
       async stop() {
         this.status = 'stopped';
+        for (const viewer of this.viewers) viewer.end();
+        this.viewers.clear();
+        await this.endCast();
         await captureQueue;
         await browser.close().catch(() => {});
         await this.save();
@@ -930,6 +980,9 @@ export async function startRecording(
 
     context.on('page', (popup) => {
       if (popup !== page) pages.push(popup);
+      // The live view follows the newest tab, as a desktop browser shows it.
+      void session.castActivePage().catch(() => {});
+      popup.on('close', () => void session.castActivePage().catch(() => {}));
     });
     page.on('close', () => {
       session.status = 'stopped';

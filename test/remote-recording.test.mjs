@@ -34,7 +34,7 @@ test('without a screen, recording streams the hidden browser and records input s
   const url = await formServer(t);
   const session = await startRecording({ id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Remote' }] }, 't', url);
   t.after(() => session.stop());
-  assert.deepEqual(session.summary().remote, { width: 1440, height: 900 });
+  assert.deepEqual(session.summary().remote, { width: 1440, height: 900, stream: true });
 
   const frame = await session.screen();
   assert.equal(frame.subarray(0, 2).toString('hex'), 'ffd8', 'the screen is a JPEG');
