@@ -18,8 +18,7 @@ import {
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
-import { launchBrowser } from './browsers.mjs';
+import { launchBrowser, launchPlaywrightBrowser } from './browsers.mjs';
 import {
   createJiraIssue,
   issueDraft,
@@ -1309,7 +1308,7 @@ async function createUnlockedStudio({
       res.end(html);
       return;
     }
-    const browser = await chromium.launch();
+    const browser = await launchPlaywrightBrowser();
     try {
       const page = await browser.newPage();
       await page.setContent(html);

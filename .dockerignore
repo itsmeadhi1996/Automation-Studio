@@ -8,3 +8,4 @@ artifacts
 *.log
 console_messages.txt
 .browsers
+.runtime

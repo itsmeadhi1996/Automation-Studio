@@ -15,7 +15,13 @@ foreach ($name in @('STUDIO_USERNAME', 'STUDIO_PASSWORD', 'STUDIO_SESSION_TOKEN'
 }
 
 try {
-    & node $launcher $mode --open
+    # A computer without Node.js, the npm packages or a browser gets them here.
+    $node = & (Join-Path $PSScriptRoot 'scripts\ensure-node.ps1')
+    $env:PATH = "$(Split-Path -Parent $node);$env:PATH"
+    & $node (Join-Path $PSScriptRoot 'scripts\prepare.mjs')
+    if ($LASTEXITCODE -ne 0) { throw 'QA Studio could not finish setting up this computer.' }
+
+    & $node $launcher $mode --open
     $exitCode = $LASTEXITCODE
 
     # Exit code 3 means the running server needs an administrator sign-in first.
@@ -32,7 +38,7 @@ try {
             [Environment]::SetEnvironmentVariable('STUDIO_SESSION_TOKEN', $null, 'Process')
             [Environment]::SetEnvironmentVariable('STUDIO_USERNAME', $credential.UserName, 'Process')
             [Environment]::SetEnvironmentVariable('STUDIO_PASSWORD', $credential.GetNetworkCredential().Password, 'Process')
-            & node $launcher $mode --open
+            & $node $launcher $mode --open
             $exitCode = $LASTEXITCODE
         }
     }

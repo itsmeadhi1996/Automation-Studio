@@ -7,3 +7,4 @@ artifacts/
 console_messages.txt
 .playwright-mcp/
 .browsers/
+.runtime/

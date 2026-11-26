@@ -6,9 +6,18 @@ This is a new build written from `app prompt.md`. It does not use the 3.0 source
 
 ## Requirements
 
-- Node.js 22 or newer (`"engines": { "node": ">=22" }`).
-- Windows 11. The encrypted workspace key uses Windows DPAPI and belongs to the Windows account that started Studio.
-- Google Chrome. The seed test runs with `channel: 'chrome'`. If Chrome is missing, `npx playwright install chrome` supplies it. Microsoft Edge and Playwright Firefox are also supported for execution.
+Nothing needs to be installed first. Copy the folder to the computer and run **Start QA Studio.cmd** on Windows or `./start-studio.sh` on Linux and macOS. On the first start it:
+
+1. Uses Node.js 22 or newer if the computer has it. Otherwise it downloads the current Node.js 24 release from nodejs.org into `.runtime/node`, checks its SHA-256 against the published checksums, and uses that private copy. Nothing is installed system-wide.
+2. Runs `npm ci` when `node_modules` is missing, or `npm install` when `package-lock.json` has changed since the last start (`scripts/prepare.mjs`).
+3. Downloads Playwright's Chromium when it is missing.
+
+The first start needs internet access and takes a few minutes. Later starts skip all three steps.
+
+- Windows 10 or 11 keeps the encrypted workspace key in Windows DPAPI, tied to the Windows account that started Studio. On Linux and macOS, `credentials.key` holds the key itself, so protect the folder.
+- Google Chrome or Microsoft Edge runs a test when installed. When neither is installed, Studio uses Playwright's Chromium, which shares their engine. Playwright Firefox downloads the first time a Firefox run needs it.
+- On Linux, Playwright's browsers need system libraries. If a run reports missing libraries, run `sudo npx playwright install-deps chromium firefox` once.
+- Record Web opens its own browser window on a computer with a screen. On a server without one, the browser is shown inside the Record Web page instead.
 
 ## Port and address
 
@@ -67,6 +76,11 @@ On the first visit, create the administrator account. There are no default crede
 
 - **Start QA Studio.cmd** runs `Restart QA Studio.ps1 -UpgradeOnly`, which runs `node launch.mjs --upgrade --open`. It starts Studio in the background if it is not running and opens the browser. If a running server's source version differs from the installed files, it restarts that server through the safe restart checks. A current server is opened without a restart.
 - **Restart QA Studio.cmd** runs `Restart QA Studio.ps1`, which runs `node launch.mjs --restart --open` and always restarts a running server.
+- Both first run `scripts/ensure-node.ps1` and `scripts/prepare.mjs`, which set up a computer that is missing Node.js, the packages or Chromium (see Requirements).
+
+### Linux and macOS launcher
+
+`./start-studio.sh` does the same as Start QA Studio.cmd, and `./start-studio.sh --restart` the same as Restart QA Studio.cmd. When a restart needs an administrator sign-in, it asks for it in the terminal. The script needs `curl` or `wget` only when Node.js is missing.
 
 When the running server needs an administrator sign-in, the launcher exits with code 3. The PowerShell script then asks in the console for a **QA Studio administrator** username and a masked password. These are application credentials, not your Windows password. A blank username cancels, and the server is not stopped. The credentials are set only for that process and are restored afterwards. They are never passed to the background server.
 

@@ -98,10 +98,18 @@ async function startServer(storage) {
   }
 }
 
+const OPENERS = {
+  win32: ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Start-Process '${url}'`]],
+  darwin: ['open', [url]],
+  linux: ['xdg-open', [url]],
+};
+
 function openBrowser() {
-  if (!flags.includes('--open') || process.platform !== 'win32') return;
-  const command = `Start-Process '${url}'`;
-  execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { windowsHide: true }, (error) => {
+  const opener = OPENERS[process.platform];
+  if (!flags.includes('--open') || !opener) return;
+  // A Linux computer without a desktop has nothing to open the page in.
+  if (process.platform === 'linux' && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) return;
+  execFile(...opener, { windowsHide: true }, (error) => {
     if (error) console.log('Open the URL above in your browser.');
   });
 }
