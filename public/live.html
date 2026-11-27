@@ -16,6 +16,21 @@
       <h1 id="live-title">Recording window</h1>
       <p id="live-status" role="status" aria-live="polite">Starting the recording browser…</p>
     </header>
+    <nav class="live-tools" id="live-tools" aria-label="Recorder" hidden>
+      <div class="live-group" role="group" aria-label="Inspect element">
+        <span class="live-label">Inspect element</span>
+        <button type="button" data-mode="actions" aria-pressed="true">Record actions</button>
+        <button type="button" data-mode="visible" aria-pressed="false">Verify visible</button>
+        <button type="button" data-mode="text" aria-pressed="false">Verify text</button>
+        <button type="button" data-mode="value" aria-pressed="false">Verify value</button>
+      </div>
+      <div class="live-group" role="group" aria-label="Recording">
+        <button type="button" data-command="pause" id="live-pause">Pause</button>
+        <button type="button" data-command="undo">Undo last step</button>
+        <button type="button" data-command="stop" class="live-stop">Stop</button>
+      </div>
+      <p class="live-last" id="live-last"></p>
+    </nav>
     <main class="live-main">
       <figure class="remote-screen" hidden>
         <div class="remote-frame">

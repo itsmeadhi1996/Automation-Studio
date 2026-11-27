@@ -816,13 +816,17 @@ export async function startRecording(
         if (!this.viewers.size || this.cast?.page === target) return;
         await this.endCast();
         const cdp = await context.newCDPSession(target);
-        const cast = { page: target, cdp };
+        const cast = { page: target, cdp, framed: false };
         this.cast = cast;
+        const show = (frame) => {
+          this.lastFrame = frame;
+          for (const viewer of this.viewers) viewer.frame(frame);
+        };
         cdp.on('Page.screencastFrame', ({ data, sessionId }) => {
           void cdp.send('Page.screencastFrameAck', { sessionId }).catch(() => {});
           if (this.cast !== cast) return;
-          this.lastFrame = Buffer.from(data, 'base64');
-          for (const viewer of this.viewers) viewer.frame(this.lastFrame);
+          cast.framed = true;
+          show(Buffer.from(data, 'base64'));
         });
         await cdp.send('Page.startScreencast', {
           format: 'jpeg',
@@ -830,6 +834,10 @@ export async function startRecording(
           maxWidth: REMOTE_VIEWPORT.width,
           maxHeight: REMOTE_VIEWPORT.height,
         });
+        // A page that has finished painting sends no screencast frame until it changes, so a new
+        // viewer gets the current screen at once.
+        const current = await this.screen().catch(() => null);
+        if (current && this.cast === cast && !cast.framed) show(current);
       },
 
       async endCast() {
@@ -894,6 +902,8 @@ export async function startRecording(
       await session.save().catch(() => {});
       return toolboxState();
     };
+    // The recording window on a server without a screen sends the same commands through Studio.
+    session.command = handleToolboxCommand;
 
     const applySecretValue = (input, identity) => {
       if (!secretNames.has(identity)) {
@@ -981,7 +991,8 @@ export async function startRecording(
     };
 
     await context.exposeBinding('__studioMode', () => session.mode);
-    await context.exposeBinding('__studioToolbox', (source, command) => handleToolboxCommand(command));
+    // Without a screen, the recording window holds these controls, so the page under test stays uncovered.
+    if (!remote) await context.exposeBinding('__studioToolbox', (source, command) => handleToolboxCommand(command));
     await context.exposeBinding('__studioRecord', (source, input) => {
       if (session.status !== 'recording') {
         return { captured: false, message: 'Recording is paused or stopped. Resume recording in Studio to capture.' };

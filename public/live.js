@@ -192,6 +192,57 @@
     send({ type: 'text', text: text.slice(0, MAX_TEXT) });
   });
 
+  /* ---------- Recorder controls ---------- */
+
+  const tools = document.getElementById('live-tools');
+  const pauseButton = document.getElementById('live-pause');
+  const lastStep = document.getElementById('live-last');
+  let commandBusy = false;
+
+  function showControls(active) {
+    tools.hidden = false;
+    for (const button of tools.querySelectorAll('[data-mode]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.mode === (active.mode || 'actions')));
+    }
+    const paused = active.status === 'paused';
+    pauseButton.textContent = paused ? 'Resume' : 'Pause';
+    pauseButton.dataset.command = paused ? 'resume' : 'pause';
+    const last = active.steps.at(-1);
+    lastStep.textContent = last ? `Last step: ${last.name}` : '';
+  }
+
+  // Modes and commands go through Studio's recording API, as the Record Web page sends them.
+  async function command(path, body = {}) {
+    if (!recording || commandBusy) return;
+    commandBusy = true;
+    try {
+      const response = await fetch(`/api/recordings/${encodeURIComponent(recording.id)}/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Studio did not accept the command');
+      if (result.status === 'stopped') finish('Recording stopped. This window closes now.');
+      else if (recording) {
+        recording = result;
+        showControls(result);
+      }
+    } catch (error) {
+      setStatus(error.message);
+    } finally {
+      commandBusy = false;
+      viewer.focus({ preventScroll: true });
+    }
+  }
+
+  tools.addEventListener('click', (event) => {
+    const button = event.target.closest('button');
+    if (!button) return;
+    if (button.dataset.mode) void command('mode', { mode: button.dataset.mode });
+    else if (button.dataset.command) void command(button.dataset.command);
+  });
+
   /* ---------- Recording state ---------- */
 
   function attach(active) {
@@ -212,6 +263,7 @@
     clearTimeout(streamCheck);
     viewer.removeAttribute('src');
     figure.hidden = true;
+    tools.hidden = true;
     document.body.classList.add('stopped');
     setStatus(message);
     setTimeout(() => window.close(), CLOSE_AFTER_STOP_MS);
@@ -240,6 +292,7 @@
     } else {
       if (recording?.id !== active.id) attach(active);
       recording = active;
+      showControls(active);
       title.textContent = `Recording: ${active.testName}`;
       document.title = `Recording: ${active.testName}`;
       const paused = active.status === 'paused' ? ' · paused' : '';

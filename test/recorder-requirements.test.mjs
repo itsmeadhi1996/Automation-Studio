@@ -62,8 +62,11 @@ test('verification feedback and QA mappings work through review, restart and imp
   const target=session.page;
   await target.getByLabel('Your name').fill('Alex');
   await target.getByRole('button',{name:'Get started'}).click();
+  // Inspection modes are chosen in the recording browser's toolbox; the Studio page has no mode picker.
+  assert.equal(await ui.locator('#record-mode').count(),0);
+  const modeNames={text:'Verify text',value:'Verify value',visible:'Verify visible'};
   const setMode=async mode=>{
-    await ui.locator('#record-mode').selectOption(mode);
+    await target.locator('qa-studio-recorder-toolbox').getByRole('button',{name:modeNames[mode],exact:true}).click();
     await target.waitForFunction(value=>window.__studioRecorderMode===value,mode);
   };
   await setMode('text');

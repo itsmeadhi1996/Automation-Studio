@@ -637,7 +637,7 @@ The prerequisite runs before the test in the same browser session. Each test sta
 
 ### Recording on a hosted site
 
-When Studio runs on a server without a screen, such as Render, the recording browser runs on the server and Start recording opens it in a separate **recording window**. Allow pop-ups for the site if your browser asks; if the window is blocked or closed, select **Open recording window** on the Record Web page. Click in the window to use the page, scroll with the mouse wheel, and type after clicking it. Ctrl+V pastes text. Everything you do there is recorded as in a visible browser, and the window closes when the recording stops. Replay and Debug run without a window on such a server; follow them through the step screenshots.
+When Studio runs on a server without a screen, such as Render, the recording browser runs on the server and Start recording opens it in a separate **recording window**. Allow pop-ups for the site if your browser asks; if the window is blocked or closed, select **Open recording window** on the Record Web page. Click in the window to use the page, scroll with the mouse wheel, and type after clicking it. Ctrl+V pastes text. Everything you do there is recorded as in a visible browser. The toolbar at the top of the window holds the recorder controls: **Inspect element** (Record actions, Verify visible, Verify text, Verify value), **Pause**, **Undo last step** and **Stop**. The window closes when the recording stops. Replay and Debug run without a window on such a server; follow them through the step screenshots.
 
 Each recorded click outlines the clicked element in red for a moment, in the visible browser and in the recording window, so you can see which element the step uses.
 
@@ -645,9 +645,9 @@ Each recorded click outlines the clicked element in red for a moment, in the vis
 
 A click alone does not prove the application worked. Add a check:
 
-1. Change **Recording mode** to **Verify visible**, **Verify text** or **Verify field value**.
+1. In the recording browser, choose **Verify visible**, **Verify text** or **Verify value**: in the recorder toolbox (under **Fetch element**) of the browser window, or on the toolbar of the recording window on a hosted site. The Studio page does not show these modes.
 2. Click the element in the recording browser. A red outline and a message confirm the capture. The click does not trigger the element.
-3. Switch back to **Record actions**.
+3. Choose **Record actions** again to go on recording.
 
 Each verification saves a screenshot with the target outlined. Open it with **View captured screenshot**.
 

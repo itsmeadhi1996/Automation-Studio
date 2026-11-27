@@ -73,6 +73,7 @@ test('without a screen, recording streams the hidden browser and records input s
   t.after(() => session.stop());
   assert.deepEqual(session.summary().remote, { width: 1440, height: 900, stream: true });
 
+  assert.equal(await session.page.locator('qa-studio-recorder-toolbox').count(), 0, 'the toolbox lives in the recording window');
   const frame = await session.screen();
   assert.equal(frame.subarray(0, 2).toString('hex'), 'ffd8', 'the screen is a JPEG');
 
@@ -93,7 +94,7 @@ test('without a screen, recording streams the hidden browser and records input s
 });
 
 test('Record Web opens a recording window that turns clicks and typing into steps', { timeout: 90000 }, async (t) => {
-  const { base, url, browser, steps } = await hostedStudio(t, 3541);
+  const { base, url, browser, api, steps } = await hostedStudio(t, 3541);
   const page = await browser.newPage();
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
@@ -124,6 +125,19 @@ test('Record Web opens a recording window that turns clicks and typing into step
   assert.ok(await until(async () => typed(await steps()) && saved(await steps())), JSON.stringify(await steps()));
   const count = (await steps()).length;
   await popup.getByText(`${count} steps saved`).waitFor();
+
+  // Elements are inspected from the window's own toolbar; the streamed page carries no toolbox.
+  assert.equal(await page.locator('#record-mode').count(), 0);
+  const tools = popup.getByRole('navigation', { name: 'Recorder' });
+  await tools.getByRole('button', { name: 'Verify visible' }).click();
+  await tools.getByRole('button', { name: 'Verify visible', pressed: true }).waitFor();
+  assert.equal((await api('/api/status')).activeRecording.mode, 'visible');
+  await popup.mouse.click(box.x + 160 * scale, box.y + 220 * scale);
+  assert.ok(await until(async () => (await steps()).at(-1).action === 'visible'), JSON.stringify((await steps()).at(-1)));
+  await tools.getByRole('button', { name: 'Undo last step' }).click();
+  assert.ok(await until(async () => (await steps()).length === count));
+  await tools.getByRole('button', { name: 'Record actions' }).click();
+  await tools.getByRole('button', { name: 'Record actions', pressed: true }).waitFor();
 
   // Closing the window leaves the recording running, and the button opens it again.
   await popup.close();

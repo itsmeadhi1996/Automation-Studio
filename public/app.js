@@ -877,12 +877,6 @@ function renderRecording() {
     ?.tests.find((test) => test.id === recording.testId);
   const requirements = linked?.qa?.manualSteps || [];
   const isStopped = recording.status === 'stopped';
-  const modes = [
-    { id: 'actions', name: 'Record actions' },
-    { id: 'visible', name: 'Verify visible' },
-    { id: 'text', name: 'Verify text' },
-    { id: 'value', name: 'Verify field value' },
-  ];
   const isProcess = recording.kind === 'process';
   let hint = requirements.length
     ? 'Step names include the element label or text and its type. Matching QA Studio requirements are added automatically. After Stop and review, you can adjust the requirement mappings. Several actions can use the same requirement.'
@@ -899,8 +893,7 @@ function renderRecording() {
       <div class="panel-body">
         <p role="status">${recordingSaveStatus(recording)}</p>
         <p>${recording.remote ? 'The browser runs on the Studio server and is shown in the recording window. Click, scroll and type in it there' : 'Interact with the visible browser'}. Recorded clicks are outlined in red. Each interaction is saved automatically. Frames, new tabs, open shadow DOM and multiple selections are supported. File uploads require a local-path variable.</p>
-        <p>Choose a verification mode and click an element: a red outline marks the target and a message confirms the saved capture. A screenshot shows the highlighted target and its position on the page.</p>
-        <label>Recording mode<select id="record-mode" ${isStopped ? 'disabled' : ''}>${options(modes, recording.mode || 'actions')}</select></label>
+        ${isStopped ? '' : `<p>To inspect an element, choose Verify visible, Verify text or Verify value in ${recording.remote ? 'the recording window' : 'the recorder toolbox in the browser window'}, then click the element: a red outline marks it and a message confirms the saved capture. A screenshot shows the highlighted target and its position on the page.</p>`}
         <p class="recorder-map-hint">${hint} ${isProcess ? '' : `<a href="${requirementsHref}" target="_blank" rel="noopener">View QA Studio requirements</a>`}</p>
         <div class="inline-actions">
           ${recordingControls(recording, isStopped)}
@@ -3947,9 +3940,6 @@ async function handleFieldChange(element) {
     await updateRecordingMapping(element);
   } else if (element.matches('[data-step-mapping]')) {
     updateStepMapping(element);
-  } else if (element.id === 'record-mode') {
-    state.activeRecording = await api(`/api/recordings/${state.activeRecording.id}/mode`, 'POST', { mode: element.value });
-    render();
   } else if (element.matches('[data-step-repeat]')) {
     const step = selected().steps[Number(element.dataset.index)];
     if (element.checked) step.repeat = true;

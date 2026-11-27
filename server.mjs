@@ -2949,11 +2949,14 @@ async function createUnlockedStudio({
       await json(res, recording.summary());
       return true;
     }
-    const actionRoute = route.match(/^\/api\/recordings\/([\w-]+)\/(pause|resume|stop|discard)$/);
+    const actionRoute = route.match(/^\/api\/recordings\/([\w-]+)\/(pause|resume|stop|discard|undo)$/);
     if (!actionRoute) return false;
     check(recording?.id === actionRoute[1], 'Recording not found');
     const action = actionRoute[2];
-    if (action === 'pause' || action === 'resume') {
+    if (action === 'undo') {
+      check(recording.status !== 'stopped', 'Recording is already stopped');
+      await recording.command('undo');
+    } else if (action === 'pause' || action === 'resume') {
       check(recording.status !== 'stopped', 'Recording is already stopped');
       recording.status = action === 'pause' ? 'paused' : 'recording';
       await recording.save();
