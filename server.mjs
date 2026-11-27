@@ -2867,13 +2867,29 @@ async function createUnlockedStudio({
         'Cache-Control': 'no-store',
         'X-Accel-Buffering': 'no',
       });
+      // A connection slower than the frames would queue them and show the page further and further
+      // behind. While a frame is still being sent, newer ones replace each other and only the
+      // latest follows, so the viewer always sees the page as it is now.
       let last = null;
+      let sending = false;
+      let next = null;
+      const write = (image) => {
+        res.write(`--${STREAM_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${image.length}\r\n\r\n`);
+        res.write(image);
+        if (res.write('\r\n')) return;
+        sending = true;
+        res.once('drain', () => {
+          sending = false;
+          const waiting = next;
+          next = null;
+          if (waiting && !res.writableEnded && !res.destroyed) write(waiting);
+        });
+      };
       const send = (image) => {
         if (res.writableEnded || res.destroyed) return;
         last = image;
-        res.write(`--${STREAM_BOUNDARY}\r\nContent-Type: image/jpeg\r\nContent-Length: ${image.length}\r\n\r\n`);
-        res.write(image);
-        res.write('\r\n');
+        if (sending) next = image;
+        else write(image);
       };
       // Proxies close quiet connections, and the browser sends frames only when the page changes.
       const keepAlive = setInterval(() => last && send(last), STREAM_KEEPALIVE_MS);

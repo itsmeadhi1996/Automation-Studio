@@ -93,6 +93,57 @@ test('without a screen, recording streams the hidden browser and records input s
   await assert.rejects(session.input({ type: 'text', text: 'late' }), /already stopped/);
 });
 
+test('numbered inputs apply in the order they were made, even when they arrive out of order', { timeout: 60000 }, async (t) => {
+  withoutScreen(t);
+  const url = await formServer(t);
+  const session = await startRecording({ id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Order' }] }, 't', url);
+  t.after(() => session.stop());
+  await session.input({ type: 'click', x: 250, y: 120 });
+  const channel = 'window-1';
+  // The second input reaches the server first; it waits for the first.
+  const second = session.input({ type: 'text', text: 'B', channel, seq: 2 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await session.page.inputValue('#name'), '');
+  await Promise.all([session.input({ type: 'text', text: 'A', channel, seq: 1 }), second]);
+  assert.equal(await session.page.inputValue('#name'), 'AB');
+  // A lost input holds the later ones back only briefly.
+  await session.input({ type: 'text', text: 'C', channel, seq: 4 });
+  assert.equal(await session.page.inputValue('#name'), 'ABC');
+  await assert.rejects(session.input({ type: 'text', text: 'late', channel, seq: 3 }), /out of order/);
+});
+
+test('a viewer that reads the stream slowly gets the latest frame, not a backlog', { timeout: 60000 }, async (t) => {
+  const { base, start } = await hostedStudio(t, 3544);
+  const recording = await start();
+  const response = await new Promise((resolve) => http.get(`${base}/api/recordings/${recording.id}/stream`, resolve));
+  t.after(() => response.destroy());
+  let received = 0;
+  response.on('data', (chunk) => {
+    received += chunk.length;
+  });
+  await until(async () => received > 0);
+  const input = (event) =>
+    fetch(`${base}/api/recordings/${recording.id}/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(event),
+    });
+  await input({ type: 'click', x: 250, y: 120 });
+  // The viewer stops reading while the page changes many times.
+  response.pause();
+  for (let i = 0; i < 60; i++) {
+    await input({ type: 'text', text: 'x' });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+  const paused = received;
+  response.resume();
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  // The first frame tells a frame's size. Sixty changes would queue sixty frames; only what the
+  // network buffers already held follows, then the newest frame.
+  const frames = (received - paused) / paused;
+  assert.ok(frames < 25, `${frames.toFixed(1)} frames of the old page were queued`);
+});
+
 test('Record Web opens a recording window that turns clicks and typing into steps', { timeout: 90000 }, async (t) => {
   const { base, url, browser, api, steps } = await hostedStudio(t, 3541);
   const page = await browser.newPage();
@@ -182,6 +233,16 @@ test('over a slow link, the recording window streams frames and pointer moves ne
   await until(async () => saved(await steps()), 10000);
   assert.ok(Date.now() - clickedAt < 2000, `the click took ${Date.now() - clickedAt} ms behind queued moves`);
   assert.ok(sent < 15, `${sent} inputs were sent for 40 pointer moves and a click`);
+
+  // A click and the typing right after it each take one trip, not one trip after another.
+  const typedAt = Date.now();
+  await page.mouse.click(box.x + 250 * scale, box.y + 120 * scale);
+  await page.keyboard.type('Fast', { delay: 40 });
+  await page.keyboard.press('Tab');
+  const typed = (list) => list.some((step) => step.action === 'fill' && step.value === 'Fast');
+  assert.ok(await until(async () => typed(await steps()), 10000), JSON.stringify(await steps()));
+  const typingMs = Date.now() - typedAt;
+  assert.ok(typingMs < 1100, `the click and typing took ${typingMs} ms to reach the browser`);
   // The streamed view shows changes without asking for frames.
   const polled = await page.evaluate(() => performance.getEntriesByType('resource').some((entry) => entry.name.includes('/screen?')));
   assert.equal(polled, false);

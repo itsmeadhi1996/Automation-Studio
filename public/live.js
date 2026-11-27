@@ -4,6 +4,7 @@
   const STATUS_MS = 1000;
   const FRAME_MS = 350;
   const MOVE_MS = 200;
+  const MAX_IN_FLIGHT = 6;
   // A streamed view that has shown no frame by then falls back to asking for one frame at a time,
   // for example behind a proxy that holds back streamed responses.
   const STREAM_WAIT_MS = 5000;
@@ -32,7 +33,10 @@
   let streamCheck = null;
   let loadingFrame = false;
   let movedAt = 0;
-  let sending = false;
+  let inFlight = 0;
+  let sequence = 0;
+  // Names this window's numbered inputs; a reopened window starts its own numbering.
+  const channel = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const queue = [];
 
   const setStatus = (message) => {
@@ -79,13 +83,14 @@
 
   /* ---------- Input ---------- */
 
-  // Inputs go to the server one at a time and in order. Over a slow connection a queue of pointer
-  // moves would hold a click or key back for seconds, so a move is sent only when nothing waits,
-  // and typed text and scrolling that pile up are merged into one request.
+  // Inputs go to the server at once, without waiting for earlier ones to finish, so each click or
+  // key costs one trip to the server instead of queueing behind the others. They are numbered, and
+  // the server applies them in order. A pointer move is sent only when nothing else is on the way,
+  // and text and scrolling that pile up beyond MAX_IN_FLIGHT are merged into one request.
   function send(event) {
     if (!recording) return;
     const last = queue.at(-1);
-    if (event.type === 'move' && (sending || queue.length)) return;
+    if (event.type === 'move' && (inFlight || queue.length)) return;
     if (event.type === 'text' && last?.type === 'text' && last.text.length + event.text.length <= MAX_TEXT) {
       last.text += event.text;
       return;
@@ -97,7 +102,7 @@
       return;
     }
     queue.push({ ...event, recording: recording.id });
-    void drain();
+    pump();
   }
 
   async function post(id, event) {
@@ -112,23 +117,22 @@
     }
   }
 
-  async function drain() {
-    if (sending) return;
-    sending = true;
-    try {
-      while (queue.length) {
-        const { recording: id, ...event } = queue.shift();
-        try {
-          await post(id, event);
-        } catch (error) {
+  function pump() {
+    while (queue.length && inFlight < MAX_IN_FLIGHT) {
+      const { recording: id, ...event } = queue.shift();
+      inFlight += 1;
+      sequence += 1;
+      post(id, { ...event, channel, seq: sequence })
+        .catch((error) => {
           queue.length = 0;
           setStatus(error.message);
-        }
-      }
-    } finally {
-      sending = false;
+        })
+        .finally(() => {
+          inFlight -= 1;
+          pump();
+          if (!inFlight) refreshFrame();
+        });
     }
-    refreshFrame();
   }
 
   function point(event) {

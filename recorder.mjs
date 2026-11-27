@@ -30,6 +30,8 @@ const RECORDER_MODES = new Set(['actions', 'visible', 'text', 'value']);
 const REMOTE_VIEWPORT = { width: 1440, height: 900 };
 const REMOTE_JPEG_QUALITY = 60;
 const REMOTE_TIMEOUT_MS = 5000;
+const REMOTE_INPUT_GAP_MS = 1000;
+const REMOTE_MAX_CHANNELS = 20;
 const REMOTE_MAX_SCROLL = 5000;
 const REMOTE_MAX_TEXT = 1000;
 const REMOTE_KEYS = new Set([
@@ -766,7 +768,48 @@ export async function startRecording(
         return this.activePage().screenshot({ type: 'jpeg', quality: REMOTE_JPEG_QUALITY, timeout: REMOTE_TIMEOUT_MS });
       },
 
-      async input(event) {
+      // A recording window sends inputs without waiting for earlier ones to finish, so a click and
+      // the typing after it do not each wait a round trip to the server. Each window numbers its
+      // inputs, and they apply in that order even when requests overtake each other on the way.
+      channels: new Map(),
+      inputChain: Promise.resolve(),
+
+      input(event) {
+        const { channel, seq, ...rest } = event || {};
+        if (typeof channel !== 'string' || !Number.isInteger(seq) || seq < 1) return this.applyInput(event);
+        let line = this.channels.get(channel);
+        if (!line) {
+          if (this.channels.size >= REMOTE_MAX_CHANNELS) this.channels.delete(this.channels.keys().next().value);
+          line = { next: 1, waiting: new Map(), timer: null };
+          this.channels.set(channel, line);
+        }
+        if (seq < line.next) return Promise.reject(new Error('Input arrived out of order'));
+        return new Promise((resolve, reject) => {
+          line.waiting.set(seq, { event: rest, resolve, reject });
+          this.releaseInputs(line);
+        });
+      },
+
+      releaseInputs(line) {
+        clearTimeout(line.timer);
+        while (line.waiting.has(line.next)) {
+          const { event, resolve, reject } = line.waiting.get(line.next);
+          line.waiting.delete(line.next);
+          line.next += 1;
+          const work = this.inputChain.then(() => this.applyInput(event));
+          this.inputChain = work.catch(() => {});
+          work.then(resolve, reject);
+        }
+        // An input lost on the way must not hold back the ones after it for long.
+        if (line.waiting.size) {
+          line.timer = setTimeout(() => {
+            line.next = Math.min(...line.waiting.keys());
+            this.releaseInputs(line);
+          }, REMOTE_INPUT_GAP_MS);
+        }
+      },
+
+      async applyInput(event) {
         assert(this.remote, 'This recording uses a visible browser window.');
         assert(this.status !== 'stopped', 'Recording is already stopped');
         const target = this.activePage();
