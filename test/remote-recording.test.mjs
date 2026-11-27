@@ -261,6 +261,50 @@ test('when the stream shows no frame, the recording window asks for frames inste
   await api(`/api/recordings/${recording.id}/stop`, 'POST', {});
 });
 
+test('in Verify modes a click picks the element without the page acting on it', { timeout: 60000 }, async (t) => {
+  // A page that acts on every kind of press, including from its own window listener.
+  const page = `<!doctype html><style>body{margin:0}#act{position:absolute;left:100px;top:100px;width:200px;height:40px}</style>
+<a id="act" href="#moved">Open menu</a><p id="message">Hello</p><script>
+window.acted=[];
+for(const type of ['pointerdown','pointerup','mousedown','mouseup','click','dblclick','auxclick'])
+  document.getElementById('act').addEventListener(type,()=>acted.push(type));
+window.addEventListener('click',()=>acted.push('window click'),true);
+window.addEventListener('pointerdown',()=>acted.push('window pointerdown'),true);
+</script>`;
+  const server = http.createServer((req, res) => {
+    res.setHeader('Content-Type', 'text/html');
+    res.end(page);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const session = await startRecording(
+    { id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Verify' }] },
+    't',
+    `http://127.0.0.1:${server.address().port}`,
+    { headless: true },
+  );
+  t.after(() => session.stop());
+  const acted = () => session.page.evaluate(() => window.acted);
+
+  for (const mode of ['visible', 'text']) {
+    await session.command(`mode:${mode}`);
+    const before = session.steps.length;
+    await session.page.mouse.click(200, 120);
+    await session.page.mouse.dblclick(200, 120);
+    await session.page.mouse.click(200, 120, { button: 'middle' });
+    await session.page.touchscreen?.tap?.(200, 120).catch(() => {});
+    assert.deepEqual(await acted(), [], `${mode}: the page acted on the click`);
+    assert.equal(new URL(session.page.url()).hash, '', `${mode}: the link was followed`);
+    assert.ok(await until(() => session.steps.slice(before).some((step) => step.action === mode)), `${mode}: no ${mode} step`);
+  }
+
+  // Record actions clicks for real again.
+  await session.command('mode:actions');
+  await session.page.mouse.click(200, 120);
+  assert.ok((await acted()).includes('click'));
+  assert.equal(new URL(session.page.url()).hash, '#moved');
+});
+
 test('a recorded click outlines its element in red for a moment', { timeout: 60000 }, async (t) => {
   const url = await formServer(t);
   const session = await startRecording({ id: 'p', browser: 'chrome', tests: [{ id: 't', name: 'Flash' }] }, 't', url, { headless: true });

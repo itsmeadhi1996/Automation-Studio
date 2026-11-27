@@ -543,6 +543,36 @@ export function installRecorder() {
 
   /* ---------- Event listeners, in the capture phase ---------- */
 
+  // In Verify modes a click only picks the element; the page must not act on it. Pages act on
+  // presses as well as clicks (menus, drop-downs, framework buttons, links on mousedown), and a
+  // page's own window listener runs before any document listener, so every pointer, mouse and touch
+  // press is stopped on the window, which this script reaches first.
+  const isVerifying = (event) => !fromToolbox(event) && window.__studioRecorderMode !== 'actions';
+  const stop = (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  };
+  for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'auxclick']) {
+    window.addEventListener(
+      type,
+      (event) => {
+        if (isVerifying(event) && element(event)) stop(event);
+      },
+      { capture: true, passive: false },
+    );
+  }
+  window.addEventListener(
+    'click',
+    (event) => {
+      if (!isVerifying(event)) return;
+      const el = element(event);
+      if (!el) return;
+      stop(event);
+      captureVerification(el, window.__studioRecorderMode);
+    },
+    true,
+  );
+
   // Input, change and keydown are deliberately not gated by mode: typing still records in Verify modes.
   document.addEventListener(
     'input',
@@ -573,12 +603,6 @@ export function installRecorder() {
     (event) => {
       if (fromToolbox(event)) return;
       const el = element(event);
-      if (el && window.__studioRecorderMode !== 'actions') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        captureVerification(el, window.__studioRecorderMode);
-        return;
-      }
       if (!el || el.closest('select,option,input[type=checkbox],input[type=radio],input[type=file]')) return;
       if (el.closest('label')?.control?.matches('input[type=checkbox],input[type=radio]')) return;
       const target = el.closest(CLICKABLE) || el;
@@ -604,15 +628,17 @@ export function installRecorder() {
     true,
   );
 
+  window.addEventListener(
+    'dblclick',
+    (event) => {
+      if (isVerifying(event)) stop(event);
+    },
+    true,
+  );
   document.addEventListener(
     'dblclick',
     (event) => {
       if (fromToolbox(event)) return;
-      if (window.__studioRecorderMode !== 'actions') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        return;
-      }
       const el = element(event);
       if (el) emit('doubleClick', el.closest(CLICKABLE) || el);
     },
