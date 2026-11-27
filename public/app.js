@@ -118,6 +118,8 @@ const MAX_PROMPT_LENGTH = 12000;
 const COPY_NAME_LENGTH = 105;
 const POLL_MS = 1500;
 const RECORDING_POLL_MS = 400;
+// A hosted recording is followed in the recording window, which shows its own step count.
+const REMOTE_RECORDING_POLL_MS = 1000;
 const CASE_HISTORY_LIMIT = 50;
 const REASONX_BASE_URL = 'http://127.0.0.1:8080/v1';
 const RESTART_REPLAY_MESSAGE = 'Restart QA Studio using Start QA Studio.cmd to enable visible slow-motion Replay.';
@@ -4294,7 +4296,8 @@ async function poll() {
   } catch {
     $('#connection-status').textContent = DISCONNECTED_TEXT;
   } finally {
-    setTimeout(poll, state?.activeRecording ? RECORDING_POLL_MS : POLL_MS);
+    const recordingPoll = state?.activeRecording?.remote ? REMOTE_RECORDING_POLL_MS : RECORDING_POLL_MS;
+    setTimeout(poll, state?.activeRecording ? recordingPoll : POLL_MS);
   }
 }
 
@@ -4409,12 +4412,16 @@ async function loadRunHistoryTools() {
 }
 
 async function init() {
+  // The workspace, history tools and settings load while the sign-in check runs, instead of one
+  // after another; the server checks access on each request anyway.
+  const loading = Promise.all([api('/api/state'), loadRunHistoryTools(), ensureSettings()]);
+  loading.catch(() => {});
   try {
     await globalThis.StudioAuth?.ready;
     if (!globalThis.StudioFolders) {
       throw new Error('Restart QA Studio using Start QA Studio.cmd to load folder support.');
     }
-    [state, historyTools] = await Promise.all([api('/api/state'), loadRunHistoryTools()]);
+    [state, historyTools] = await loading;
     historyTools.recoverPlanState(state);
     StudioIssueReport.setState(state);
     window.addEventListener('studio:issue-reported', () => {
@@ -4422,7 +4429,6 @@ async function init() {
         .then(applyLatestState)
         .catch(() => {});
     });
-    await ensureSettings();
 
     const params = new URLSearchParams(location.search);
     if (params.get('view') === 'plan') {

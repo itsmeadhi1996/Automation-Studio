@@ -7,6 +7,14 @@ import { gzip } from 'node:zlib';
 const compress = promisify(gzip);
 const GZIP_MIN_BYTES = 1024;
 const GZIP_LEVEL = 1;
+// Static files are compressed once and kept, so they can use the smallest output.
+const STATIC_GZIP_LEVEL = 9;
+// Pages link their scripts and styles as /name.js?v=<version of that file>. A request naming the
+// current version can be kept by the browser until the file changes, which saves a round trip per
+// file on every page load; any other request is revalidated as before.
+const ASSET_REFERENCE = /((?:src|href)=")\/([\w.-]+\.(?:js|css|svg))(")/g;
+const VERSIONED_CACHE = 'private, max-age=31536000, immutable';
+const assetVersion = (tag) => tag.slice(3, 15);
 
 export const contentTag = (content) =>
   `W/"${createHash('sha256').update(content).digest('base64url')}"`;
@@ -69,7 +77,7 @@ export async function sendText(
 export function createStaticResponder(directory) {
   const cache = new Map();
 
-  return async (req, res, name, type) => {
+  async function load(name) {
     const file = path.join(directory, name);
     const info = await stat(file);
     const stamp = `${info.mtimeMs}:${info.ctimeMs}:${info.size}`;
@@ -81,18 +89,47 @@ export function createStaticResponder(directory) {
       };
       cache.set(name, entry);
     }
-    let asset;
     try {
-      asset = await entry.ready;
+      return { entry, asset: await entry.ready };
     } catch (error) {
       if (cache.get(name) === entry) cache.delete(name);
       throw error;
     }
-    res.setHeader('Cache-Control', 'private, no-cache');
-    await sendText(req, res, asset.bytes, {
+  }
+
+  // The page with each linked file's current version added; rebuilt when the page or a file changes.
+  async function versionedPage(entry, asset) {
+    const source = asset.bytes.toString('utf8');
+    const names = [...new Set([...source.matchAll(ASSET_REFERENCE)].map((match) => match[2]))];
+    const versions = new Map();
+    await Promise.all(
+      names.map(async (name) => {
+        const linked = await load(name).catch(() => null);
+        if (linked) versions.set(name, assetVersion(linked.asset.tag));
+      }),
+    );
+    const key = names.map((name) => versions.get(name) || '').join(',');
+    if (entry.page?.key !== key) {
+      const bytes = Buffer.from(
+        source.replace(ASSET_REFERENCE, (match, start, name, end) =>
+          versions.has(name) ? `${start}/${name}?v=${versions.get(name)}${end}` : match,
+        ),
+      );
+      entry.page = { key, bytes, tag: contentTag(bytes) };
+    }
+    return entry.page;
+  }
+
+  return async (req, res, name, type) => {
+    const { entry, asset } = await load(name);
+    const sent = type === 'text/html' ? await versionedPage(entry, asset) : asset;
+    const requested = new URL(req.url, 'http://localhost').searchParams.get('v');
+    const isCurrent = requested && requested === assetVersion(asset.tag);
+    res.setHeader('Cache-Control', isCurrent ? VERSIONED_CACHE : 'private, no-cache');
+    await sendText(req, res, sent.bytes, {
       type: `${type}; charset=utf-8`,
-      tag: asset.tag,
-      compressed: () => (entry.compressed ||= compress(asset.bytes, { level: GZIP_LEVEL })),
+      tag: sent.tag,
+      compressed: () => (sent.compressed ||= compress(sent.bytes, { level: STATIC_GZIP_LEVEL })),
     });
   };
 }

@@ -809,9 +809,13 @@ export async function startRecording(
         }
       },
 
+      // When someone last used the recording window; see Studio's idle check.
+      lastActivity: Date.now(),
+
       async applyInput(event) {
         assert(this.remote, 'This recording uses a visible browser window.');
         assert(this.status !== 'stopped', 'Recording is already stopped');
+        this.lastActivity = Date.now();
         const target = this.activePage();
         const inView = (value, size) => Number.isFinite(value) && value >= 0 && value <= size;
         const isPoint = inView(event?.x, REMOTE_VIEWPORT.width) && inView(event?.y, REMOTE_VIEWPORT.height);
@@ -846,10 +850,12 @@ export async function startRecording(
       async watch(viewer) {
         assert(this.canStream && this.status !== 'stopped', 'Live view is not available');
         this.viewers.add(viewer);
+        this.lastActivity = Date.now();
         if (this.lastFrame) viewer.frame(this.lastFrame);
         await this.castActivePage();
         return () => {
           this.viewers.delete(viewer);
+          this.lastActivity = Date.now();
           if (!this.viewers.size) void this.endCast();
         };
       },

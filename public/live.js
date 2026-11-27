@@ -276,7 +276,7 @@
   async function poll() {
     let data;
     try {
-      const response = await fetch('/api/status', { cache: 'no-store' });
+      const response = await fetch('/api/status?fields=activity', { cache: 'no-store' });
       if (response.status === 401) {
         finish('Your session ended. Sign in to Studio again.');
         return;

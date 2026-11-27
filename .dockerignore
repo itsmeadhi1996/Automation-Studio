@@ -9,3 +9,7 @@ artifacts
 console_messages.txt
 .browsers
 .runtime
+test
+app prompt.md
+VERIFICATION.md
+.github

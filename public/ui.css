@@ -1280,7 +1280,7 @@ html .automation-studio .sidebar .explorer-title {
   font-variant-numeric: tabular-nums;
 }
 
-.automation-studio :is(.brand-sub, kbd, .explorer-title, .test-meta small, .execution-heading small, .top-actions button, .top-actions button span, .test-meta .small, .test-meta .hint) {
+.automation-studio :is(.brand-sub, kbd, .explorer-title, .test-meta small, .execution-heading small, .top-actions button, .top-actions button span) {
   color: var(--ui-soft);
   font-size: 12px;
   letter-spacing: normal;
@@ -1843,7 +1843,7 @@ html[data-theme="dark"] :is(td, .panel-head, .folder-add > summary, .folder-menu
 }
 
 /* Secondary labels stay readable on panels and on the page background. */
-html[data-theme="dark"] :is(label, small, td, th, footer, .breadcrumb, .breadcrumb strong, .brand-sub, .nav-label, .eyebrow, .nav-item, .tree-heading, .explorer-title, .subtitle, .test-meta label, .steps-table td.num, .steps-table td.drag, .row-actions button, .execution-heading, .execution-card p, .statusbar, .statusbar b, .empty-state p, .resource-card p, .form-hint, .ai-hero p, .panel-head p, .panel-head .tag, .stat-label, .stat-foot, .stat-value small, .split-legend, .split-legend b, .case-sub, .id-text, .empty, .empty strong, .filters .label, .prose, .meta-item > span:first-child, .detail-step p, .detail-step p b, .back-link, .suite-card p, .run-case small, .manual-step p, .manual-step .step-time, .loading, .field-hint, .mode-option small, .run-result-detail summary, .small-text, .folder-select small, .folder-root small, .folder-case, .qa-context li p, .topbar-search, .topbar-search kbd, #breadcrumbs) {
+html[data-theme="dark"] :is(label, small, td, th, footer, .breadcrumb, .breadcrumb strong, .brand-sub, .nav-label, .eyebrow, .nav-item, .tree-heading, .explorer-title, .subtitle, .test-meta label, .steps-table td.num, .steps-table td.drag, .row-actions button, .execution-heading, .execution-card p, .statusbar, .statusbar b, .empty-state p, .resource-card p, .form-hint, .ai-hero p, .panel-head p, .panel-head .tag, .stat-label, .stat-foot, .stat-value small, .split-legend, .split-legend b, .case-sub, .id-text, .empty, .empty strong, .filters .label, .prose, .meta-item > span:first-child, .detail-step p, .detail-step p b, .back-link, .suite-card p, .run-case small, .manual-step p, .loading, .field-hint, .mode-option small, .run-result-detail summary, .small-text, .folder-select small, .folder-root small, .folder-case, .qa-context li p, .topbar-search, .topbar-search kbd, #breadcrumbs) {
   color: #a9bdb0;
 }
 
@@ -1855,7 +1855,7 @@ html[data-theme="dark"] :is(.case-link, .text-button, .notice a, .qa-context a, 
   color: #8cdcb3;
 }
 
-html[data-theme="dark"] :is(.error, .error-text, .run-error-details, .run-error-details > summary, button.danger) {
+html[data-theme="dark"] :is(.error, .error-text, button.danger) {
   color: #f29999;
 }
 
@@ -2697,16 +2697,6 @@ html .sidebar button.theme-toggle:hover {
   .studio-loading {
     min-height: 330px;
     padding: 30px 12px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    animation: none !important;
-    transition: none !important;
   }
 }
 

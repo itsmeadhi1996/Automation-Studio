@@ -46,6 +46,34 @@ test('text transport negotiates compression and revalidates edited assets',async
   assert.equal(changed.status,200);assert.notEqual(changed.headers.etag,plain.headers.etag);assert.match(changed.body.toString(),/Updated$/);
 });
 
+test('pages link versioned assets that browsers keep until the file changes',async t=>{
+  const directory=path.resolve('.test-output','versioned-'+Date.now());await mkdir(directory,{recursive:true});
+  await writeFile(path.join(directory,'page.html'),'<link rel="stylesheet" href="/look.css"><script src="/asset.js"></script><script src="/missing.js"></script><a href="/">Home</a>');
+  await writeFile(path.join(directory,'asset.js'),'console.log(1);');
+  await writeFile(path.join(directory,'look.css'),'body{color:red}');
+  const staticResponse=createStaticResponder(directory);
+  const server=http.createServer((req,res)=>{
+    const name=req.url.split('?')[0].slice(1)||'page.html';
+    const type=name.endsWith('.html')?'text/html':name.endsWith('.css')?'text/css':'text/javascript';
+    staticResponse(req,res,name,type).catch(error=>{res.statusCode=500;res.end(error.message);});
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base='http://127.0.0.1:'+server.address().port;
+  const page=await rawGet(base+'/page.html');
+  assert.equal(page.headers['cache-control'],'private, no-cache');
+  const html=page.body.toString();
+  const version=html.match(/src="\/asset\.js\?v=([\w-]+)"/)[1];
+  assert.match(html,/href="\/look\.css\?v=[\w-]+"/);
+  assert.match(html,/src="\/missing\.js"/);assert.match(html,/href="\/"/);
+  assert.equal((await rawGet(base+'/asset.js?v='+version)).headers['cache-control'],'private, max-age=31536000, immutable');
+  assert.equal((await rawGet(base+'/asset.js?v=old')).headers['cache-control'],'private, no-cache');
+  assert.equal((await rawGet(base+'/asset.js')).headers['cache-control'],'private, no-cache');
+  // Editing a linked file changes its version in the page, so browsers fetch the new file.
+  await writeFile(path.join(directory,'asset.js'),'console.log(2);');
+  const changed=(await rawGet(base+'/page.html')).body.toString().match(/src="\/asset\.js\?v=([\w-]+)"/)[1];
+  assert.notEqual(changed,version);
+});
+
 test('case grouping preserves aliases, status precedence and startup errors',()=>{
   for(const status of ['running','failed','passed','interrupted']){
     const run={id:'run',status,error:'Startup failure',tests:[

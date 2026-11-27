@@ -53,10 +53,14 @@ Set these environment variables:
 
 Limits when hosted:
 
-- Test runs need a browser on the server. Use the `Dockerfile`, or install the browsers and their system libraries yourself (`npx playwright install --with-deps chrome firefox`). Platforms that cannot install system packages, such as Render's native Node runtime, cannot run tests.
-- Microsoft Edge is not installed in the image, so choose Chrome or Firefox for hosted runs.
+- Test runs need a browser on the server. Use the `Dockerfile`, or install the browsers and their system libraries yourself (`npx playwright install --with-deps chrome firefox`). On Render's native Node runtime, Studio downloads Playwright's Chromium at install time instead.
+- Microsoft Edge is not installed in the image; Edge projects run in Playwright's Chromium, the same engine.
 - OpenVPN, the ReasonX folder and Windows credential protection (DPAPI) are Windows-only. On Linux, `credentials.key` holds the key itself, so protect the disk.
-- Sign-in throttling counts attempts per address, and behind a proxy every visitor shares the proxy's address.
+- Sign-in throttling counts attempts per visitor address (on Render, the address Render's proxy reports) and, separately, failed attempts per account: after 20 failures in 15 minutes that account waits 15 minutes.
+- Only one recording, run or debug session can be active on the whole server. A hosted recording whose recording window stays closed for 30 minutes stops by itself, and its steps wait on the Record Web page for review.
+- A command-line (stdio) MCP server runs its command on the server, so on a hosted site only an administrator can add one or change its command. Other MCP managers can still add the presets, rename or remove connections, and use HTTP servers.
+- If saving fails (for example a full disk), the server log says so and `GET /api/health` reports `status: "degraded"` with `lastSaveError`.
+- A crash or forced stop no longer leaves the workspace locked: a lock left by an earlier process or container is recognised and replaced.
 
 ## Install, set up and start
 

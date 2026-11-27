@@ -86,7 +86,7 @@ html:not([data-theme="dark"]) .qa-studio .panel {
   border-radius: var(--studio-radius-card);
 }
 
-html:not([data-theme="dark"]) :is(.workspace-switch, .engine-card, .folder-browser, .auto-cases-folders, .requirements-note, .requirements-panel) {
+html:not([data-theme="dark"]) :is(.workspace-switch, .engine-card, .folder-browser, .auto-cases-folders, .requirements-note) {
   border-color: var(--ui-edge);
   background: var(--ui-card);
   color: var(--ui-ink);

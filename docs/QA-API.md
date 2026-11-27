@@ -76,7 +76,7 @@ QA saves still keep these fields on disk, because the server merges QA input int
 | Route | Tier | Request | Result |
 | --- | --- | --- | --- |
 | `GET /api/state` | Q (A with `?workspace=automation`) | none | `{features,aiGenerations,agentDrafts,bugTracker,reportedIssues,projects,runs,nextTestNumber,activeRun,activeRecording,activeDebug}`. Supports a weak ETag and 304 |
-| `GET /api/status` | ST | none | `{activeGenerations,runs,nextTestNumber,activeRun,activeRecording,activeDebug}` |
+| `GET /api/status` | ST | none | `{activeGenerations,runs,nextTestNumber,activeRun,activeRecording,activeDebug}`; `?fields=activity` leaves out `runs` |
 | `POST /api/projects` | Create projects | project JSON | 201 normalized project. The creator is assigned unless they are an administrator |
 | `PUT /api/projects/:id` | ST | full project + `revision` | 200 project. Send `workspace: "automation"` for an Automation Studio save |
 

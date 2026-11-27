@@ -8,6 +8,10 @@ const SESSION_LIFETIME_MS = 8 * 60 * 60 * 1000;
 const MAX_OTHER_SESSIONS = 9;
 const THROTTLE_LIMIT = 15;
 const THROTTLE_WINDOW_MS = 60000;
+// Failed sign-ins per account, whatever address they come from, so guessing one password from many
+// addresses is slow too. Kept high enough that a stranger cannot easily lock the owner out.
+const ACCOUNT_FAILURE_LIMIT = 20;
+const ACCOUNT_FAILURE_WINDOW_MS = 15 * 60000;
 const MIN_PASSWORD = 12;
 const MAX_PASSWORD = 256;
 
@@ -207,6 +211,8 @@ export async function createAuth(directory) {
     return token;
   }
 
+  const accountFailures = new Map();
+
   function checkThrottle(address) {
     const now = Date.now();
     for (const [key, value] of attempts) {
@@ -252,12 +258,23 @@ export async function createAuth(directory) {
     async login(input, address) {
       const bucket = checkThrottle(address);
       const username = String(input.username || '').trim().toLowerCase();
+      const now = Date.now();
+      const failures = accountFailures.get(username);
+      if (failures && failures.until <= now) accountFailures.delete(username);
+      if (accountFailures.get(username)?.count >= ACCOUNT_FAILURE_LIMIT) {
+        fail('Too many failed sign-ins for this account. Try again in 15 minutes.', 429);
+      }
       const user = users.find((candidate) => candidate.username === username);
       const valid = await verifyPassword(input.password, user?.passwordHash || dummyHash);
       const hasAccess = user?.role === 'admin' || can(user, 'qa') || can(user, 'automation');
       if (!valid || !user?.active || !hasAccess) {
+        if (accountFailures.size > 10000) accountFailures.clear();
+        const entry = accountFailures.get(username) || { count: 0, until: now + ACCOUNT_FAILURE_WINDOW_MS };
+        entry.count += 1;
+        accountFailures.set(username, entry);
         fail('Invalid credentials or account access is disabled. Contact your administrator.', 401);
       }
+      accountFailures.delete(username);
       // A concurrent password or permission change invalidates an in-flight login too.
       if (users.find((current) => current.id === user.id) !== user) {
         fail('Account changed. Please sign in again.', 401);

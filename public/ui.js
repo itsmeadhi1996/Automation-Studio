@@ -29,7 +29,6 @@
     close: 'm6 6 12 12M6 18 18 6',
     trash: 'M3 6h18M8 6V3h8v3M5 6l1 15h12l1-15M10 10v7m4-7v7',
     help: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M9 9a3 3 0 0 1 6 0c0 2-3 2-3 4m0 3v.1',
-    globe: 'M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0M3 12h18M12 3c6 6 6 12 0 18-6-6-6-12 0-18',
     copy: 'M8 8h13v13H8zM16 8V3H3v13h5',
     pause: 'M8 5v14M16 5v14',
     menu: 'M4 6h16M4 12h16M4 18h16',
@@ -42,7 +41,6 @@
     vpn: 'M12 2 3 6v6c0 5 9 10 9 10s9-5 9-10V6l-9-4ZM8 12l3 3 5-6',
     variables: 'M8 3H5v18h3M16 3h3v18h-3M9 9l6 6m0-6-6 6',
     stop: 'M5 5h14v14H5z',
-    share: 'M16 4a3 3 0 1 0 6 0 3 3 0 0 0-6 0ZM2 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0Zm14 8a3 3 0 1 0 6 0 3 3 0 0 0-6 0ZM8 10l8-5M8 14l8 5',
     move: 'M12 2v20M2 12h20M8 6l4-4 4 4M8 18l4 4 4-4M6 8l-4 4 4 4m12-8 4 4-4 4',
     replay: 'M4 8a9 9 0 1 1-1 8M3 2v7h7M10 8v8l6-4Z',
   };
@@ -88,7 +86,6 @@
     'debug-test': 'debug',
     'debug-step': 'runs',
     'debug-close': 'stop',
-    'cancel-run': 'stop',
     'record-web': 'recording',
     'record-stop': 'stop',
     'record-toggle': 'recording',
@@ -107,9 +104,6 @@
     'generate-ai': 'bolt',
     'open-ai-test': 'editor',
     'select-test': 'cases',
-    report: 'reports',
-    pdf: 'download',
-    share: 'share',
     'new-project': 'plus',
     'new-test': 'plus',
     'new-suite': 'plus',
@@ -167,14 +161,11 @@
     'local-test-data': 'Manage reusable test data for this case',
     'test-options': 'Configure datasets, tracing and suite membership',
     save: 'Save workspace changes (Ctrl+S)',
-    report: 'Open the HTML execution report',
-    pdf: 'Download the execution report as a PDF',
     'directory-move': 'Move this test to a folder',
     'move-step': 'Move this step',
     'remove-step': 'Remove this step',
     'duplicate-step': 'Duplicate this step',
     'step-options': 'Configure this step',
-    share: 'Copy an execution summary',
   };
 
   const ENHANCED_CONTROLS = 'button,a.button,a.nav-item,.tabs [data-view],.folder-add > summary';

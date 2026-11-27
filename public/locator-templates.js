@@ -52,15 +52,6 @@ globalThis.StudioLocators = (() => {
     return context;
   }
 
-  function contextKey(value) {
-    return JSON.stringify([
-      value.pageUrl || '',
-      value.pageIndex ?? 0,
-      value.framePath || (value.frame ? [value.frame] : []),
-      value.container || '',
-    ]);
-  }
-
   function cssDecode(value) {
     const withoutLineContinuations = value.replace(/\\(?:\r\n|[\n\r\f])/g, '');
     const escape = /\\(?:([0-9a-fA-F]{1,6})(?:\r\n|[\t\n\r\f ])?|([^\r\n\f]))/g;
@@ -657,7 +648,6 @@ globalThis.StudioLocators = (() => {
     normalizedTemplate,
     genericName,
     contextOf,
-    contextKey,
     contextFor,
   });
 })();

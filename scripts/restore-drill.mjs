@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = path.resolve(process.argv[2] || path.join(scriptDir, '..', 'data'));
+const dataDir = path.resolve(process.argv[2] || path.join(process.env.STUDIO_STORAGE_DIR || path.join(scriptDir, '..'), 'data'));
 const requiredFiles = ['credentials.key', 'users.json', 'studio.json'];
 
 const exists = (file) => access(path.join(dataDir, file)).then(() => true, () => false);

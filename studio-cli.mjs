@@ -141,7 +141,7 @@ export async function main(args = process.argv.slice(2)) {
         await delay(RUN_POLL_MS);
         run = await api(`/api/runs/${runId}`);
       }
-      while ((await api('/api/status')).activeRun === runId) await delay(STATUS_POLL_MS);
+      while ((await api('/api/status?fields=activity')).activeRun === runId) await delay(STATUS_POLL_MS);
       runId = null;
       failed ||= run.status !== 'passed';
 

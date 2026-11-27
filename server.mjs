@@ -15,7 +15,10 @@ import {
   documentWarnings,
   extractDocumentText,
 } from './project-documents.mjs';
+import { createReadStream, unlinkSync } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import http from 'node:http';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { canShowBrowser, launchBrowser, launchPlaywrightBrowser } from './browsers.mjs';
@@ -117,6 +120,8 @@ const HOSTED_ADMIN = {
     '83ef95c7e01983533804580f7167be1a:c3133e6fe2964385e494b2df5d8b8bd7738e818bdbb7615e4575a5eeed0225a65c8e55bf7be1b3c5280589ebd8f9429ea114a25637de589fe0784d704c01e44d',
 };
 const BODY_LIMIT_BYTES = 2 * 1024 * 1024;
+const IDLE_RECORDING_MS = 30 * 60000;
+const PROGRAMMING_ERRORS = [TypeError, ReferenceError, RangeError];
 const SAVE_BATCH_MS = 200;
 const SHUTDOWN_GRACE_MS = 5000;
 const WORK_LOG_LIMIT = 10000;
@@ -227,6 +232,13 @@ const CONTENT_TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 
 
 const httpError = (message, status, extra = {}) => Object.assign(new Error(message), { status, ...extra });
 
+// Behind Render's proxy every visitor arrives from the proxy's address; the proxy adds the visitor's
+// own address last to X-Forwarded-For. Elsewhere the header could be forged, so it is ignored.
+function clientAddress(req) {
+  const forwarded = process.env.RENDER && String(req.headers['x-forwarded-for'] || '').split(',').at(-1).trim();
+  return forwarded || req.socket.remoteAddress;
+}
+
 const check = (condition, message) => {
   if (!condition) throw httpError(message, 400);
 };
@@ -304,13 +316,46 @@ function redactRun(run) {
   return { ...run, tests: run.tests.map(redactCaseValues) };
 }
 
+// Names this run of the process. A container runs its server as process 1 every time, so a lock
+// left by a container that crashed holds the same process id as the next one; the boot id and host
+// tell the two apart.
+const PROCESS_BOOT = randomUUID();
+const heldLocks = new Set();
+process.once('exit', () => {
+  for (const file of heldLocks) {
+    try {
+      unlinkSync(file);
+    } catch {
+      // Already removed.
+    }
+  }
+});
+
+function lockIsLive(owner) {
+  if (!Number.isInteger(owner.pid)) return false;
+  if (owner.host && owner.host !== os.hostname()) {
+    // On a host such as Render one container at a time uses the disk, so a lock from another
+    // container was left behind. Elsewhere another computer may share the folder.
+    return !process.env.RENDER;
+  }
+  if (owner.pid === process.pid) return owner.boot === PROCESS_BOOT;
+  try {
+    process.kill(owner.pid, 0);
+    return true;
+  } catch (error) {
+    return error.code !== 'ESRCH';
+  }
+}
+
 async function acquireWorkspaceLock(directory) {
   const lockFile = path.join(directory, 'studio.lock');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       const handle = await open(lockFile, 'wx');
-      await handle.writeFile(JSON.stringify({ pid: process.pid }));
+      await handle.writeFile(JSON.stringify({ pid: process.pid, host: os.hostname(), boot: PROCESS_BOOT }));
+      heldLocks.add(lockFile);
       return async () => {
+        heldLocks.delete(lockFile);
         await handle.close();
         await unlink(lockFile).catch(() => {});
       };
@@ -323,13 +368,7 @@ async function acquireWorkspaceLock(directory) {
     } catch {
       throw new Error('Workspace lock is unreadable. Stop other Studio instances before removing data/studio.lock.');
     }
-    let alive = true;
-    try {
-      process.kill(owner.pid, 0);
-    } catch (error) {
-      if (error.code === 'ESRCH') alive = false;
-    }
-    if (alive) throw new Error('This workspace is already open in another Studio server.');
+    if (lockIsLive(owner)) throw new Error('This workspace is already open in another Studio server.');
     await unlink(lockFile);
   }
   throw new Error('Could not lock the workspace');
@@ -371,6 +410,7 @@ async function createUnlockedStudio({
   aiFetcher = fetch,
   bugTrackerFetcher = fetch,
   onShutdown = null,
+  idleRecordingMs = IDLE_RECORDING_MS,
   vpn = new OpenVpnConnect(),
   requirementInspector = inspectRequirementApp,
   reasonxRuntime = createReasonxRuntime({
@@ -537,6 +577,7 @@ async function createUnlockedStudio({
   // Saves are coalesced: the workspace is encrypted and serialized when its turn
   // in the queue comes, so a burst of saves becomes one write of the latest state.
   // Callers whose write was superseded resolve with the newer write.
+  let saveError = null;
   const persist = () => {
     const entry = {};
     latestSave = entry;
@@ -546,8 +587,16 @@ async function createUnlockedStudio({
         clearTimeout(saveTimer);
         saveTimer = null;
       }
-      await writeFile(`${storeFile}.tmp`, JSON.stringify(vault.encode(store)));
-      await rename(`${storeFile}.tmp`, storeFile);
+      try {
+        await writeFile(`${storeFile}.tmp`, JSON.stringify(vault.encode(store)));
+        await rename(`${storeFile}.tmp`, storeFile);
+        saveError = null;
+      } catch (error) {
+        // A full or read-only disk would otherwise lose changes silently at the next restart.
+        if (!saveError) console.error('Saving Studio data failed:', error.message);
+        saveError = { message: error.message, at: new Date().toISOString() };
+        throw error;
+      }
       return false;
     });
     entry.done = work.then((superseded) => (superseded ? latestSave.done : undefined));
@@ -758,8 +807,9 @@ async function createUnlockedStudio({
     const disk = await storageHealth(dataDir, artifactsDir);
     const delay = await eventLoopDelay();
     return {
-      status: disk.dataWritable && disk.artifactsWritable ? 'ok' : 'degraded',
+      status: disk.dataWritable && disk.artifactsWritable && !saveError ? 'ok' : 'degraded',
       ...disk,
+      ...(saveError ? { lastSaveError: saveError } : {}),
       eventLoopDelayMs: Number(delay.toFixed(2)),
       metrics: metrics.snapshot(),
     };
@@ -780,7 +830,7 @@ async function createUnlockedStudio({
       return true;
     }
     if (req.method === 'POST' && route === '/api/auth/login') {
-      const result = await auth.login(await readBody(req), req.socket.remoteAddress);
+      const result = await auth.login(await readBody(req), clientAddress(req));
       res.setHeader('Set-Cookie', sessionCookie(result.token));
       await json(res, { user: result.user, home: homeFor(result.user) });
       return true;
@@ -976,9 +1026,11 @@ async function createUnlockedStudio({
       return true;
     }
     if (req.method === 'GET' && route === '/api/status') {
+      // ?fields=activity leaves out the runs, for callers that poll often and only follow what runs now.
+      const withRuns = url.searchParams.get('fields') !== 'activity';
       await json(res, {
         activeGenerations: generationState(user).filter((job) => job.status === 'running'),
-        runs: store.runs.filter(isVisible).slice(0, STATE_RUN_LIMIT).map((run) => runForViewer(run)),
+        ...(withRuns ? { runs: store.runs.filter(isVisible).slice(0, STATE_RUN_LIMIT).map((run) => runForViewer(run)) } : {}),
         ...activityState(),
       });
       return true;
@@ -1570,6 +1622,20 @@ async function createUnlockedStudio({
     return false;
   }
 
+  // A stdio connection runs its command on the Studio server. On a hosted site only an administrator
+  // may choose that command; others may keep, rename or remove an existing one, or add a preset.
+  const isHosted = Boolean(publicSite || process.env.RENDER);
+  const HOSTED_COMMAND_MESSAGE = 'On a hosted Studio only an administrator can add or change a command-line MCP server.';
+  const sameCommand = (a, b) => a.command === b.command && JSON.stringify(a.args || []) === JSON.stringify(b.args || []);
+  function isKnownCommand(server) {
+    if (server?.transport !== 'stdio') return true;
+    const known = [
+      ...store.settings.mcpServers.filter((item) => item.transport === 'stdio'),
+      ...mcpCatalog().map((preset) => preset.config).filter((config) => config.transport === 'stdio'),
+    ];
+    return known.some((item) => sameCommand(item, server));
+  }
+
   async function mcpRoutes(req, res, route, url, user) {
     const presetRoute = route.match(/^\/api\/mcp\/presets\/(playwright|atlassian)$/);
     if (presetRoute && req.method === 'POST') {
@@ -1589,6 +1655,7 @@ async function createUnlockedStudio({
       const input = await readBody(req);
       const hasOnlyServers = Object.keys(input).every((key) => key === 'mcpServers');
       check(Array.isArray(input.mcpServers) && hasOnlyServers, 'Send only MCP server connections');
+      check(user.role === 'admin' || !isHosted || input.mcpServers.every(isKnownCommand), HOSTED_COMMAND_MESSAGE);
       await saveSettings({ mcpServers: input.mcpServers });
       await json(res, settingsResponse(user));
       return true;
@@ -2996,6 +3063,22 @@ async function createUnlockedStudio({
     return true;
   }
 
+  // A hosted recording whose window was closed without Stop would keep the one browser busy for the
+  // whole team. After a while without a window or input it stops, and its steps wait for review.
+  async function stopIdleRecording() {
+    const isIdle =
+      recording?.remote &&
+      recording.status !== 'stopped' &&
+      !recording.viewers?.size &&
+      Date.now() - recording.lastActivity > idleRecordingMs;
+    if (!isIdle) return;
+    const minutes = Math.round(idleRecordingMs / 60000);
+    recording.warnings.push(`Recording stopped after ${minutes} minutes without the recording window open.`);
+    await recording.stop();
+    store.recording = structuredClone(recording.summary());
+    await persist();
+  }
+
   async function tickSchedules() {
     const isBusy =
       closing || schedulerWork || activeRun || recordingLive() || debugSessions.size || startingBrowser || vpn.busy;
@@ -3108,16 +3191,26 @@ async function createUnlockedStudio({
       await json(res, { error: 'Artifact access denied' }, 403);
       return true;
     }
-    let content;
+    const file = path.join(artifactsDir, name);
+    let info;
     try {
-      content = await readFile(path.join(artifactsDir, name));
+      info = await stat(file);
     } catch (error) {
       if (error.code !== 'ENOENT') throw error;
       await json(res, { error: 'Not found' }, 404);
       return true;
     }
-    res.writeHead(200, { 'Content-Type': route.endsWith('.zip') ? 'application/zip' : 'image/png' });
-    res.end(content);
+    // Screenshots show again on every re-render; an unchanged file is answered without its bytes.
+    const tag = `W/"${info.size.toString(36)}-${Math.round(info.mtimeMs).toString(36)}"`;
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.setHeader('ETag', tag);
+    if (String(req.headers['if-none-match'] || '').split(',').some((value) => value.trim() === tag)) {
+      res.writeHead(304);
+      res.end();
+      return true;
+    }
+    res.writeHead(200, { 'Content-Type': route.endsWith('.zip') ? 'application/zip' : 'image/png', 'Content-Length': info.size });
+    await pipeline(createReadStream(file), res);
     return true;
   }
 
@@ -3257,6 +3350,11 @@ async function createUnlockedStudio({
           return;
         }
         const status = error.status || (error.code === 'ENOENT' ? 404 : 400);
+        // Validation errors are plain Errors and only reach the user; a programming error is logged
+        // too, so the host's log shows why a request failed.
+        if (PROGRAMMING_ERRORS.some((type) => error instanceof type)) {
+          console.error(`${req.method} ${req.url.split('?')[0]} failed:`, error.stack);
+        }
         const body = { error: error.message };
         const isRequirementRoute = /^\/api\/projects\/[\w-]+\/requirements(?:\/|\?|$)/.test(req.url);
         const userMessage = error.userMessage || (isRequirementRoute ? requirementErrorUserMessage(error, status) : undefined);
@@ -3290,6 +3388,7 @@ async function createUnlockedStudio({
           server.off('error', reject);
           scheduleTimer = setInterval(() => {
             tickSchedules().catch((error) => console.error('Schedule update failed:', error.message));
+            stopIdleRecording().catch((error) => console.error('Stopping an idle recording failed:', error.message));
           }, SCHEDULE_TICK_MS);
           scheduleTimer.unref();
           resolve();
@@ -3297,6 +3396,8 @@ async function createUnlockedStudio({
       }),
     async close() {
       closing = true;
+      // Saves changes first, so stopping a slow run or recording cannot cost them.
+      if (saveTimer) await persist().catch(() => {});
       for (const controller of generationControllers.values()) controller.abort();
       clearInterval(scheduleTimer);
       await schedulerWork;
@@ -3326,19 +3427,28 @@ async function createUnlockedStudio({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const FORCED_EXIT_MS = 8000;
+  // Render waits 30 seconds after SIGTERM before it kills the server.
+  const FORCED_EXIT_MS = 25000;
   let studio;
   let isStopping = false;
-  const shutdown = async () => {
+  const shutdown = async (code = 0) => {
     if (isStopping) return;
     isStopping = true;
     setTimeout(() => process.exit(1), FORCED_EXIT_MS).unref();
-    await studio.close();
-    process.exit(0);
+    await studio?.close().catch((error) => console.error('Shutdown failed:', error.message));
+    process.exit(code);
   };
+  // An error nothing handled leaves the server in an unknown state: save what is saved, release the
+  // workspace and exit, so the host restarts it.
+  const crash = (error) => {
+    console.error('QA Studio stopped after an unexpected error:', error?.stack || error);
+    void shutdown(1);
+  };
+  process.on('uncaughtException', crash);
+  process.on('unhandledRejection', crash);
   studio = await createStudio({ onShutdown: shutdown });
   await studio.listen();
   console.log(`QA Studio: ${process.env.STUDIO_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || `http://127.0.0.1:${studio.server.address().port}`}`);
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', () => shutdown());
+  process.on('SIGTERM', () => shutdown());
 }

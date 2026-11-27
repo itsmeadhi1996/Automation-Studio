@@ -2496,8 +2496,9 @@ async function init() {
   bindEvents();
   try {
     if (!globalThis.StudioFolders) throw new Error('Restart QA Studio using Start QA Studio.cmd to load folder support.');
-    historyTools = await import('/run-history.js');
-    state = historyTools.recoverPlanState(await api('/api/state'));
+    let loaded;
+    [historyTools, loaded] = await Promise.all([import('/run-history.js'), api('/api/state')]);
+    state = historyTools.recoverPlanState(loaded);
     const requested = new URL(location.href).searchParams.get('projectId') || localStorage.getItem('qa-project');
     projectId = state.projects.find((item) => item.id === requested)?.id || state.projects[0]?.id;
     await navigate();
